@@ -1,0 +1,5 @@
+{
+  "host": "0.0.0.0",
+  "port": 3033,
+  "backend_base_url": "http://backend:8000"
+}

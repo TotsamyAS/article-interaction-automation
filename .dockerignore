@@ -1,0 +1,14 @@
+**
+!backend/
+!backend/**
+!frontend/
+!frontend/**
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/.venv/
+backend/data/
+frontend/node_modules/
+frontend/dist/
+**/.env
+**/.env.*
+**/*.sqlite*

@@ -1,0 +1,22 @@
+{
+  "name": "hm-comp-frontend",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 3033",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "start": "bun run server.ts"
+  },
+  "dependencies": {
+    "svelte": "5.57.1"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.3.0",
+    "@types/bun": "1.4.2",
+    "svelte-check": "4.7.6",
+    "typescript": "5.9.2",
+    "vite": "8.3.0"
+  }
+}

@@ -1,0 +1,38 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    volumes:
+      - experiment-data:/data
+    init: true
+    environment:
+      INVITATION_SIGNING_KEY: ${INVITATION_SIGNING_KEY:?Set INVITATION_SIGNING_KEY in the root .env yourself}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; from app.config import load_settings; urllib.request.urlopen(f'http://localhost:{load_settings().port}/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "127.0.0.1:3033:3033"
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const c=await Bun.file('config.json').json(); const r=await fetch('http://localhost:'+c.port+'/health'); if(!r.ok) process.exit(1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  experiment-data:

@@ -1,0 +1,11 @@
+.env
+.env.*
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.sqlite*
+.venv/
+data/
+node_modules/
+.DS_Store
+docs/article_project.docx
