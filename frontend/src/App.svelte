@@ -8,6 +8,7 @@
   import LiveSearchProgress from './lib/components/LiveSearchProgress.svelte';
   import M1Workbench from './lib/components/M1Workbench.svelte';
   import M2Workbench from './lib/components/M2Workbench.svelte';
+  import M3Workbench from './lib/components/M3Workbench.svelte';
 
   let authState = $state<'loading' | 'authorized' | 'unauthorized' | 'error'>('loading');
   let me = $state<MeResponse | null>(null);
@@ -19,16 +20,20 @@
   let fatalMessage = $state('');
   let toast = $state<{ tone: 'success' | 'error'; text: string; key: number } | null>(null);
   let logoutOpen = $state(false);
-  let now = $state(Date.now());
+  let now = $state(performance.now());
   let logger = $state<TrialEventLogger | null>(null);
   let loggerTrialId = $state('');
   let expiredRefreshId = $state('');
+  let eventWarning = $state('');
 
   const currentSession = $derived(me?.sessions.find((session) => session.kind === selectedKind) ?? null);
   const currentTrial = $derived(currentSession?.trials.find((trial) => trial.status === 'active' || trial.status === 'pending') ?? null);
   const completedTrials = $derived(currentSession?.trials.filter((trial) => trial.status === 'correct' || trial.status === 'incomplete').length ?? 0);
   const progressPercent = $derived(currentSession?.trials.length ? Math.round(completedTrials / currentSession.trials.length * 100) : 0);
-  const remainingSeconds = $derived(currentTrial?.deadline_ms ? Math.max(0, Math.ceil((currentTrial.deadline_ms - now) / 1000)) : null);
+  const remainingSeconds = $derived.by(() => {
+    void now;
+    return currentTrial?.status === 'active' && logger ? Math.ceil(logger.remainingMilliseconds() / 1000) : null;
+  });
   const attemptsLeft = $derived(currentTrial && currentSession ? Math.max(0, Number(currentSession.manifest.protocol.attempt_limit) - currentTrial.attempts.length) : 0);
 
   function setToast(tone: 'success' | 'error', text: string) {
@@ -108,7 +113,7 @@
 
   onMount(() => {
     void load();
-    const timer = window.setInterval(() => now = Date.now(), 1000);
+    const timer = window.setInterval(() => now = performance.now(), 1000);
     return () => window.clearInterval(timer);
   });
 
@@ -120,7 +125,7 @@
     }
     if (loggerTrialId === trial.id) return;
     logger?.stop();
-    logger = new TrialEventLogger(trial);
+    logger = new TrialEventLogger(trial, (message) => eventWarning = message);
     logger.start();
     loggerTrialId = trial.id;
   });
@@ -165,6 +170,8 @@
       <button class:active={selectedKind === 'practice'} onclick={() => selectedKind = 'practice'}>Тренировка</button>
     </nav>
 
+    {#if eventWarning}<p class="notice warning" role="alert">{eventWarning}</p>{/if}
+
     {#if !currentSession}
       <section class="start-card"><p class="eyebrow">{selectedKind === 'experiment' ? '15 проб' : 'Тренировочный режим'}</p>
         <h2>{selectedKind === 'experiment' ? 'Основная сессия ещё не начата' : 'Тренировка ещё не начата'}</h2>
@@ -189,7 +196,7 @@
               <div class="prompt-placeholder"><h2>Следующая проба готова</h2><p>Формулировка появится после запуска; с этого момента начнётся отсчёт времени.</p>
                 <button class="primary" data-track="trial-start" disabled={requestBusy} onclick={() => startTrial(currentTrial)}>Начать пробу</button></div>
             {:else}
-              <div class="unavailable-card"><h2>Режим {currentTrial.mode} пока не подключён</h2><p>Backend не подменяет M3–M5 другими интерфейсами. Продолжение этой сессии станет доступно после выбора соответствующей системы интерпретации.</p></div>
+              <div class="unavailable-card"><h2>Режим {currentTrial.mode} пока не подключён</h2><p>Backend не подменяет M4–M5 другими интерфейсами. Продолжение этой сессии станет доступно после подключения соответствующего режима.</p></div>
             {/if}
           {:else}
             <div class="task-prompt"><p class="eyebrow">Задание {currentTrial.task_id}</p><h2>{currentTrial.prompt}</h2></div>
@@ -197,6 +204,8 @@
               <M1Workbench trial={currentTrial} {records} referenceDate={currentSession.manifest.protocol.reference_date} {logger} onAttempt={handleAttempt} onBusy={handleBusy} />
             {:else if currentTrial.mode === 'M2' && logger && manualHelp}
               <M2Workbench trial={currentTrial} help={manualHelp} {logger} onAttempt={handleAttempt} onBusy={handleBusy} />
+            {:else if currentTrial.mode === 'M3' && logger}
+              <M3Workbench trial={currentTrial} {logger} onAttempt={handleAttempt} onBusy={handleBusy} />
             {/if}
           {/if}
         </section>

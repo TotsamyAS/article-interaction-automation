@@ -8,6 +8,7 @@ services:
     init: true
     environment:
       INVITATION_SIGNING_KEY: ${INVITATION_SIGNING_KEY:?Set INVITATION_SIGNING_KEY in the root .env yourself}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in the root .env yourself}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; from app.config import load_settings; urllib.request.urlopen(f'http://localhost:{load_settings().port}/health', timeout=3)"]

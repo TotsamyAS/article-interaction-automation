@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -17,12 +18,16 @@ class Settings(BaseModel):
     seed: int
     trial_limit_seconds: int = Field(gt=0)
     attempt_limit: int = Field(gt=0)
-    break_seconds: int = Field(ge=0)
+    break_seconds: Literal[0]
     idle_threshold_ms: int = Field(gt=0)
     average_tolerance: Decimal = Field(gt=0, allow_inf_nan=False)
     public_base_url: str
     login_redirect_path: str
     access_cookie_seconds: int = Field(ge=60)
+    llm_base_url: str
+    llm_model: str = Field(min_length=1, max_length=160)
+    llm_temperature: float = Field(ge=0, le=2)
+    llm_timeout_seconds: float = Field(gt=0, le=120)
 
     @model_validator(mode="after")
     def access_urls(self):

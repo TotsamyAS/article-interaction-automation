@@ -18,6 +18,9 @@ Track pending article amendments in `docs/ARTICLE-REVIEW.md`. Until the user con
 
 ## Mandatory agent workflow
 
+### Docker use restriction
+Only human user canbuild or interact with docker
+
 ### Use the repository skills
 
 The repository contains agent skills under `.agents/`.

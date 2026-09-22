@@ -27,7 +27,7 @@ def main():
             "from app.access import Principal, Signatures, require_principal\n"
             "from unittest.mock import Mock\n"
             f"settings = load_settings().model_copy(update={{'database_path': {str(Path(directory) / 'smoke.sqlite3')!r}}})\n"
-            "app = create_app(settings, signatures_factory=lambda: Mock(spec=Signatures))\n"
+            "app = create_app(settings, signatures_factory=lambda: Mock(spec=Signatures), m3_interpreter_factory=lambda *_: None)\n"
             "app.dependency_overrides[require_principal] = lambda: Principal('smoke', 'SMOKE', 'researcher', 1)\n"
             "uvicorn.run(app, host='127.0.0.1', port=18081, access_log=False, log_level='error')\n",
             encoding="utf-8",
@@ -66,7 +66,7 @@ def main():
             rows = list(csv.DictReader(io.StringIO(request("/api/analytics/trials.csv?completed_only=true").decode("utf-8-sig"))))
             assert len(rows) == 1 and rows[0]["status"] == "correct"
             workbook = load_workbook(io.BytesIO(request("/api/analytics/export.xlsx")), read_only=True)
-            assert set(workbook.sheetnames) == {"protocol", "trials", "attempts", "events", "summary"}
+            assert set(workbook.sheetnames) == {"protocol", "trials", "attempts", "events", "interpretations", "summary"}
             workbook.close()
             with zipfile.ZipFile(io.BytesIO(request("/api/analytics/export.zip"))) as archive:
                 assert "protocol.json" in archive.namelist()

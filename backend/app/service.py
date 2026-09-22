@@ -6,12 +6,13 @@ from decimal import Decimal
 from uuid import uuid4
 
 from .catalog import build_catalog
-from .contracts import (AVAILABLE_MODES, AttemptInput, Event, Mode, Query, QueryResult,
+from .contracts import (BASE_AVAILABLE_MODES, AttemptInput, Event, M3AttemptInput, Mode, Query, QueryResult,
                         SessionCreate, TaskRecord)
 from .database import Database, encode
 from .engine import csv_result, execute, verify
 from .errors import DomainError
 from .metrics import active_time_ms, trial_metrics
+from .llm import LLMError, PROMPT_VERSION
 
 
 def now_ms() -> int:
@@ -19,16 +20,29 @@ def now_ms() -> int:
 
 
 class ExperimentService:
-    def __init__(self, database: Database, clock=now_ms):
+    def __init__(self, database: Database, clock=now_ms, m3_interpreter=None):
         self.database = database
         self.settings = database.settings
         self.clock = clock
+        self.m3_interpreter = None
+        self.available_modes = set(BASE_AVAILABLE_MODES)
+        self.configure_m3(m3_interpreter)
         self.catalog = build_catalog(self.settings.reference_date)
         with database.transaction() as connection:
             snapshot = connection.execute("SELECT * FROM dataset WHERE singleton = 1").fetchone()
         self.records = [TaskRecord.model_validate(row) for row in json.loads(snapshot["records"])]
         self.truth = {key: QueryResult.model_validate(value) for key, value in json.loads(snapshot["ground_truth"]).items()}
         self.manifest = json.loads(snapshot["manifest"])
+        with database.transaction() as connection:
+            self.manifest["protocol_changes"] = [dict(row) for row in connection.execute(
+                "SELECT * FROM protocol_changes ORDER BY id")]
+
+    def configure_m3(self, interpreter) -> None:
+        self.m3_interpreter = interpreter
+        if interpreter is None:
+            self.available_modes.discard(Mode.M3)
+        else:
+            self.available_modes.add(Mode.M3)
 
     @staticmethod
     def _trial(connection, trial_id):
@@ -68,11 +82,12 @@ class ExperimentService:
         definition = self.catalog[trial["task_id"]]
         return {**trial, "prompt": definition.prompt if trial["status"] != "pending" else None,
                 "tci": definition.tci, "level": definition.level,
-                "mode_available": Mode(trial["mode"]) in AVAILABLE_MODES,
+                "mode_available": Mode(trial["mode"]) in self.available_modes,
                 "deadline_ms": trial["started_ms"] + self.settings.trial_limit_seconds * 1000 if trial["started_ms"] is not None else None,
                 "attempts": attempts,
                 "next_event_sequence": next_event_sequence,
                 "last_event_offset_ms": last_event_offset_ms,
+                "elapsed_since_start_ms": duration,
                 "metrics": trial_metrics(trial, attempts, active, self.settings.trial_limit_seconds * 1000, self.settings.attempt_limit)}
 
     def _session_view(self, connection, session):
@@ -120,7 +135,7 @@ class ExperimentService:
             self._expire(connection, trial, self.clock())
             if trial["status"] != "pending":
                 return self._trial_view(connection, trial)
-            if Mode(trial["mode"]) not in AVAILABLE_MODES:
+            if Mode(trial["mode"]) not in self.available_modes:
                 raise DomainError("mode_unavailable", "Этот режим ожидает выбора и подключения системы интерпретации.", 409)
             preceding = connection.execute("SELECT * FROM trials WHERE session_id = ? AND position < ? ORDER BY position DESC",
                                            (trial["session_id"], trial["position"])).fetchall()
@@ -129,12 +144,6 @@ class ExperimentService:
                 self._expire(connection, previous, self.clock())
                 if previous["status"] not in ("correct", "incomplete"):
                     raise DomainError("trial_order", "Сначала завершите предыдущую пробу.", 409)
-            session = self._session(connection, trial["session_id"])
-            if preceding and preceding[0]["block_index"] != trial["block_index"] and session["kind"] == "experiment":
-                previous = self._trial(connection, preceding[0]["id"])
-                remaining = previous["ended_ms"] + self.settings.break_seconds * 1000 - self.clock()
-                if remaining > 0:
-                    raise DomainError("break_required", f"До следующего блока осталось {(remaining + 999) // 1000} с.", 409)
             connection.execute("UPDATE trials SET status = 'active', started_ms = ? WHERE id = ?", (self.clock(), trial_id))
             return self._trial_view(connection, self._trial(connection, trial_id))
 
@@ -161,7 +170,7 @@ class ExperimentService:
             self._expire(connection, trial, self.clock())
             if trial["status"] != "active":
                 raise DomainError("trial_not_active", "Проба не активна или её время истекло.", 409)
-            if Mode(trial["mode"]) not in AVAILABLE_MODES:
+            if Mode(trial["mode"]) not in self.available_modes:
                 raise DomainError("mode_unavailable", "Режим не подключён.", 409)
             started = self.clock()
             operation_started = time.perf_counter_ns()
@@ -193,6 +202,100 @@ class ExperimentService:
                                 int(correct), started, finished, content))
             return response
 
+    def submit_m3(self, trial_id: str, request: M3AttemptInput):
+        request_id = str(request.request_id)
+        with self.database.transaction() as connection:
+            trial = self._trial(connection, trial_id)
+            previous = connection.execute(
+                "SELECT * FROM m3_interpretations WHERE trial_id = ? AND request_id = ?", (trial_id, request_id)
+            ).fetchone()
+            if previous:
+                previous = dict(previous)
+                if previous["user_text"] != request.text:
+                    raise DomainError("idempotency_conflict", "request_id уже использован с другим текстом.", 409)
+                if previous["status"] == "pending":
+                    raise DomainError("request_in_progress", "Этот запрос к LLM ещё выполняется.", 409)
+                if previous["status"] != "ok":
+                    status = 503 if previous["error_code"] == "llm_unavailable" else 502
+                    raise DomainError(previous["error_code"] or "llm_failed", previous["error_message"] or "LLM не смог интерпретировать запрос.", status)
+                query = Query.model_validate_json(previous["query_json"])
+            else:
+                self._expire(connection, trial, self.clock())
+                if trial["status"] != "active":
+                    raise DomainError("trial_not_active", "Проба не активна или её время истекло.", 409)
+                if trial["mode"] != Mode.M3.value:
+                    raise DomainError("mode_mismatch", "Текстовая LLM-интерпретация доступна только в M3.", 409)
+                if Mode.M3 not in self.available_modes or self.m3_interpreter is None:
+                    raise DomainError("mode_unavailable", "M3 не настроен.", 409)
+                changed_config = connection.execute(
+                    "SELECT 1 FROM m3_interpretations "
+                    "WHERE requested_model != ? OR prompt_version != ? "
+                    "OR (prompt_sha256 IS NOT NULL AND prompt_sha256 != ?) "
+                    "OR (temperature IS NOT NULL AND temperature != ?) LIMIT 1",
+                    (self.m3_interpreter.model, PROMPT_VERSION, self.m3_interpreter.prompt_sha256, self.m3_interpreter.temperature),
+                ).fetchone()
+                if changed_config:
+                    raise DomainError(
+                        "m3_protocol_changed",
+                        "Конфигурация M3 изменилась после начала сбора данных. Используйте отдельный том для нового эксперимента.",
+                        409,
+                    )
+                started = self.clock()
+                connection.execute(
+                    "INSERT INTO m3_interpretations "
+                    "(id, trial_id, request_id, user_text, status, requested_model, prompt_version, prompt_sha256, temperature, started_ms) "
+                    "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+                    (str(uuid4()), trial_id, request_id, request.text, self.m3_interpreter.model, PROMPT_VERSION,
+                     self.m3_interpreter.prompt_sha256, self.m3_interpreter.temperature, started),
+                )
+                query = None
+        if query is not None:
+            return self.submit(trial_id, AttemptInput(request_id=request.request_id, query=query))
+
+        try:
+            interpretation = self.m3_interpreter.interpret(request.text)
+        except LLMError as error:
+            finished = self.clock()
+            state = "invalid_response" if error.code == "llm_invalid_response" else "provider_error"
+            with self.database.transaction() as connection:
+                connection.execute(
+                    "UPDATE m3_interpretations SET status = ?, response_model = ?, provider = ?, system_fingerprint = ?, "
+                    "raw_response = ?, error_code = ?, error_message = ?, llm_ms = ?, input_tokens = ?, output_tokens = ?, finished_ms = ? "
+                    "WHERE trial_id = ? AND request_id = ?",
+                    (state, error.response_model, error.provider, error.system_fingerprint, error.raw_response, error.code,
+                     error.message, error.llm_ms, error.input_tokens, error.output_tokens, finished, trial_id, request_id),
+                )
+            raise DomainError(error.code, error.message, error.status) from None
+
+        query_json = encode(interpretation.query.model_dump(mode="json"))
+        try:
+            execute([], interpretation.query)
+        except DomainError:
+            finished = self.clock()
+            message = "LLM сформировал несовместимый Query. Переформулируйте запрос."
+            with self.database.transaction() as connection:
+                connection.execute(
+                    "UPDATE m3_interpretations SET status = 'invalid_query', response_model = ?, provider = ?, system_fingerprint = ?, "
+                    "raw_response = ?, query_json = ?, error_code = 'llm_invalid_query', error_message = ?, llm_ms = ?, "
+                    "input_tokens = ?, output_tokens = ?, finished_ms = ? WHERE trial_id = ? AND request_id = ?",
+                    (interpretation.response_model, interpretation.provider, interpretation.system_fingerprint,
+                     interpretation.raw_response, query_json, message, interpretation.llm_ms, interpretation.input_tokens,
+                     interpretation.output_tokens, finished, trial_id, request_id),
+                )
+            raise DomainError("llm_invalid_query", message, 502) from None
+
+        finished = self.clock()
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE m3_interpretations SET status = 'ok', response_model = ?, provider = ?, system_fingerprint = ?, "
+                "raw_response = ?, query_json = ?, llm_ms = ?, input_tokens = ?, output_tokens = ?, finished_ms = ? "
+                "WHERE trial_id = ? AND request_id = ?",
+                (interpretation.response_model, interpretation.provider, interpretation.system_fingerprint,
+                 interpretation.raw_response, query_json, interpretation.llm_ms, interpretation.input_tokens,
+                 interpretation.output_tokens, finished, trial_id, request_id),
+            )
+        return self.submit(trial_id, AttemptInput(request_id=request.request_id, query=interpretation.query))
+
     def ingest_events(self, trial_id, events: list[Event]):
         with self.database.transaction() as connection:
             trial = self._trial(connection, trial_id)
@@ -209,10 +312,14 @@ class ExperimentService:
                 duplicate = connection.execute("SELECT payload FROM events WHERE trial_id = ? AND event_id = ?", (trial_id, str(event.event_id))).fetchone()
                 if duplicate:
                     if duplicate["payload"] != payload:
-                        raise DomainError("event_conflict", "event_id уже использован для другого события.", 409)
+                        raise DomainError("event_conflict", "Не удалось сохранить журнал действий: повторно отправленное действие изменилось. Сообщите исследователю.", 409)
                     continue
-                if event.sequence <= last_seq or event.offset_ms < last_offset or event.offset_ms > max_offset:
-                    raise DomainError("event_order", "События должны идти по sequence и времени внутри пробы.", 409)
+                if event.sequence <= last_seq:
+                    raise DomainError("event_sequence", "Не удалось сохранить журнал действий: эта проба уже обновлена, возможно, в другой вкладке. Оставьте одну вкладку стенда и обновите страницу.", 409)
+                if event.offset_ms < last_offset:
+                    raise DomainError("event_time_order", "Не удалось сохранить журнал действий: время действий записано в неправильном порядке. Сообщите исследователю и обновите страницу.", 409)
+                if event.offset_ms > max_offset:
+                    raise DomainError("event_outside_trial", "Не удалось сохранить журнал действий: действие записано за пределами времени этой пробы. Сообщите исследователю и обновите страницу.", 409)
                 connection.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)",
                                    (trial_id, str(event.event_id), event.sequence, event.offset_ms, payload, self.clock()))
                 last_seq, last_offset = event.sequence, event.offset_ms
@@ -238,6 +345,9 @@ class ExperimentService:
                                  for row in connection.execute("SELECT a.* FROM attempts a JOIN trials t ON t.id = a.trial_id WHERE t.session_id = ? ORDER BY t.position, a.ordinal", (session_id,))]
         result["event_log"] = [dict(row) | {"payload": json.loads(row["payload"])} for row in connection.execute(
             "SELECT e.* FROM events e JOIN trials t ON t.id = e.trial_id WHERE t.session_id = ? ORDER BY t.position, e.sequence", (session_id,))]
+        result["interpretation_log"] = [dict(row) | {"query": json.loads(row["query_json"]) if row["query_json"] else None}
+                                        for row in connection.execute(
+            "SELECT i.* FROM m3_interpretations i JOIN trials t ON t.id = i.trial_id WHERE t.session_id = ? ORDER BY t.position, i.started_ms, i.id", (session_id,))]
         return result
 
     def export_metrics(self, session_id):

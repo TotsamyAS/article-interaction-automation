@@ -55,3 +55,23 @@ def test_manual_tags_reject_unknown_values(settings):
     records = generate_dataset(settings)
     with pytest.raises(DomainError, match="допустим"):
         compile_tags(["Статус: Несуществующий"], records, settings.reference_date)
+
+
+def test_linked_builder_vocabulary_compiles_to_shared_query(client):
+    help_data = client.get("/api/manual-query").json()
+    options = {item["label"]: item for item in help_data["builders"]}
+    assert "В работе" in options["Статус"]["values"]
+    assert "На ревью" in options["Статус"]["values"]
+    assert options["Статус"]["alternatives"]
+    assert options["Исполнитель"]["exclusive_values"] == ["отсутствует", "указан"]
+    assert options["Экспорт"]["kind"] == "action"
+    response = client.post("/api/manual-query/compile", json={"tags": [
+        "Статус: В работе / На ревью", "Приоритет != Низкий", "Итог: количество"
+    ]})
+    assert response.status_code == 200
+    query = response.json()
+    assert query["filters"][0]["operator"] == "in"
+    assert query["filters"][0]["value"] == ["В работе", "На ревью"]
+    assert query["filters"][1]["logic"] == "AND"
+    assert query["filters"][1]["operator"] == "neq"
+    assert query["grouping"]["aggregation"] == "COUNT"

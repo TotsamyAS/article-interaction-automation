@@ -29,6 +29,10 @@ TABLE_COLUMNS = {
                  "started_ms", "finished_ms", "Texec_ms", "query", "record_ids", "aggregate", "selected_groups", "export_url"],
     "events": ["session_id", "participant_code", "kind", "trial_id", "mode", "task_id", "level", "event_id", "sequence", "offset_ms",
                "received_ms", "event_kind", "target", "action", "x", "y", "key", "request_id"],
+    "interpretations": ["session_id", "participant_code", "kind", "trial_id", "mode", "task_id", "level", "request_id", "user_text",
+                        "status", "requested_model", "response_model", "provider", "system_fingerprint", "prompt_version", "prompt_sha256", "temperature",
+                        "raw_response", "query", "error_code", "error_message",
+                        "Tllm_ms", "input_tokens", "output_tokens", "started_ms", "finished_ms"],
     "summary": ["kind", "mode", "level", "participants", "trials", "pending", "active", "completed", "correct", "incomplete", "success_rate",
                 "A1_observed_n", "A1_actual_rate", "A1_analysis_rate", "Tcorrect_actual_n", "Tcorrect_actual_mean_ms",
                 "Tcorrect_analysis_mean_ms", "Tuser_active_mean_ms", "Nretry_actual_mean", "Nretry_analysis_mean"],
@@ -40,7 +44,7 @@ class AnalyticsService:
         self.experiment = experiment
 
     def collect(self, filters: AnalyticsFilter) -> dict:
-        trials, attempts, events = [], [], []
+        trials, attempts, events, interpretations = [], [], [], []
         # One transaction freezes a consistent snapshot of all exported tables.
         with self.experiment.database.transaction() as connection:
             sessions = connection.execute("SELECT * FROM sessions ORDER BY created_ms, id").fetchall()
@@ -84,12 +88,24 @@ class AnalyticsService:
                                    "received_ms": event["received_ms"], "event_kind": payload["kind"], "target": payload["target"],
                                    "action": payload.get("action"), "x": payload.get("x"), "y": payload.get("y"), "key": payload.get("key"),
                                    "request_id": payload["request_id"]})
+                for item in session["interpretation_log"]:
+                    if item["trial_id"] not in selected:
+                        continue
+                    interpretations.append({**selected[item["trial_id"]], "request_id": item["request_id"], "user_text": item["user_text"],
+                                            "status": item["status"], "requested_model": item["requested_model"],
+                                            "response_model": item["response_model"], "provider": item["provider"],
+                                            "system_fingerprint": item["system_fingerprint"], "prompt_version": item["prompt_version"],
+                                            "prompt_sha256": item["prompt_sha256"], "temperature": item["temperature"],
+                                            "raw_response": item["raw_response"], "query": item["query"], "error_code": item["error_code"],
+                                            "error_message": item["error_message"], "Tllm_ms": item["llm_ms"],
+                                            "input_tokens": item["input_tokens"], "output_tokens": item["output_tokens"],
+                                            "started_ms": item["started_ms"], "finished_ms": item["finished_ms"]})
             generated = self.experiment.clock()
-        return {"protocol": {"export_schema_version": 1, "generated_at_ms": generated, "filters": filters.model_dump(mode="json"),
+        return {"protocol": {"export_schema_version": 3, "generated_at_ms": generated, "filters": filters.model_dump(mode="json"),
                              "manifest": self.experiment.manifest, "time_units": "milliseconds", "missing_value": "empty cell / JSON null",
                              "summary_population": "terminal trials only; actual Tcorrect includes successful trials only",
                              "training_excluded": not filters.include_practice},
-                "trials": trials, "attempts": attempts, "events": events, "summary": summarize(trials)}
+                "trials": trials, "attempts": attempts, "events": events, "interpretations": interpretations, "summary": summarize(trials)}
 
 
 def _mean(rows, field):

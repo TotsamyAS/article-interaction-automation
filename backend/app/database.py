@@ -63,8 +63,13 @@ class Database:
         truth = {key: execute(records, definition.query).model_dump(mode="json") for key, definition in catalog.items()}
         if any(not result["record_ids"] for result in truth.values()):
             raise RuntimeError("Набор данных содержит экспериментальную задачу с пустым эталоном.")
-        protocol = self.settings.model_dump(mode="json", exclude={"host", "port", "database_path",
-                                                                "public_base_url", "login_redirect_path", "access_cookie_seconds"})
+        protocol = self.settings.model_dump(
+            mode="json",
+            exclude={
+                "host", "port", "database_path", "public_base_url", "login_redirect_path", "access_cookie_seconds",
+                "llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds",
+            },
+        )
         manifest = {"dataset_sha256": dataset_digest(records), "protocol": protocol, "protocol_version": 1,
                     "catalog_sha256": hashlib.sha256(encode({key: {"query": task.query.model_dump(mode="json"), "prompt": task.prompt}
                                                              for key, task in catalog.items()}).encode()).hexdigest()}
@@ -72,9 +77,19 @@ class Database:
             existing = connection.execute("SELECT manifest, records, ground_truth FROM dataset WHERE singleton = 1").fetchone()
             serialized_records = encode([record.model_dump(mode="json") for record in records])
             if existing:
-                if (existing["manifest"] != encode(manifest) or existing["records"] != serialized_records
+                existing_manifest = json.loads(existing["manifest"])
+                legacy_protocol = existing_manifest.get("protocol")
+                if isinstance(legacy_protocol, dict):
+                    legacy_protocol = dict(legacy_protocol)
+                    for key in ("llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds"):
+                        legacy_protocol.pop(key, None)
+                    existing_manifest["protocol"] = legacy_protocol
+                existing_manifest.pop("m3_prompt_sha256", None)
+                if (existing_manifest != manifest or existing["records"] != serialized_records
                         or existing["ground_truth"] != encode(truth)):
                     raise RuntimeError("Конфигурация, данные или эталоны не совпадают с сохранённым протоколом. Используйте отдельный том для нового эксперимента.")
+                if existing["manifest"] != encode(manifest):
+                    connection.execute("UPDATE dataset SET manifest = ? WHERE singleton = 1", (encode(manifest),))
             else:
                 connection.execute("INSERT INTO dataset VALUES (1, ?, ?, ?)",
                                    (encode(manifest), serialized_records, encode(truth)))

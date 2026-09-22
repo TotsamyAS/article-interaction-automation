@@ -105,7 +105,7 @@
     try {
       const query = buildQuery();
       result = await logger.measure('m1-preview', () => api<QueryResult>(`/api/trials/${trial.id}/preview`, { method: 'POST', body: JSON.stringify(query) }));
-      await logger.flush();
+      await logger.flushSafely();
     } catch (error) { message = errorMessage(error); }
     finally { busy = false; onBusy(false); }
   }

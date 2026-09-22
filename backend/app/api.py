@@ -9,26 +9,41 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from .config import Settings, load_settings
 from .analytics import AnalyticsFilter, AnalyticsService, csv_bundle, excel_workbook, table_csv
-from .contracts import (AVAILABLE_MODES, AttemptInput, AttemptView, EventBatch, Mode,
+from .contracts import (AttemptInput, AttemptView, EventBatch, M3AttemptInput, Mode,
                         Query, QueryResult, SessionCreate, SessionView, TaskRecord, TrialView)
 from .database import Database, encode
 from .errors import DomainError
 from .service import ExperimentService, now_ms
 from .access import (AccessService, COOKIE_NAME, Principal, Signatures,
-                     key_from_runtime, require_principal, same_origin)
-from .manual_query import ManualTags, compile_tags, suggestions
+                     key_from_runtime as invitation_key_from_runtime, require_principal, same_origin)
+from .manual_query import ManualTags, builders, compile_tags, suggestions
 from .engine import execute
+from .llm import OpenAICompatibleInterpreter, key_from_runtime as llm_key_from_runtime
 
 
-def create_app(settings: Settings | None = None, clock=now_ms, signatures_factory=None) -> FastAPI:
+def create_app(settings: Settings | None = None, clock=now_ms, signatures_factory=None, m3_interpreter_factory=None) -> FastAPI:
     settings = settings or load_settings()
 
     @asynccontextmanager
     async def lifespan(app):
-        signatures = signatures_factory() if signatures_factory is not None else Signatures(key_from_runtime())
+        signatures = signatures_factory() if signatures_factory is not None else Signatures(invitation_key_from_runtime())
         database = Database(settings)
         database.initialize()
-        app.state.service = ExperimentService(database, clock)
+        service = ExperimentService(database, clock)
+        if m3_interpreter_factory is None:
+            interpreter = OpenAICompatibleInterpreter(
+                base_url=settings.llm_base_url,
+                api_key=llm_key_from_runtime(),
+                model=settings.llm_model,
+                temperature=settings.llm_temperature,
+                timeout_seconds=settings.llm_timeout_seconds,
+                records=service.records,
+                reference_date=settings.reference_date,
+            )
+        else:
+            interpreter = m3_interpreter_factory(settings, service.records)
+        service.configure_m3(interpreter)
+        app.state.service = service
         app.state.access = AccessService(database, signatures, clock=lambda: clock() / 1000)
         yield
 
@@ -88,7 +103,7 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
     @router.get("/protocol", tags=["Протокол"])
     def protocol():
         return {"manifest": app.state.service.manifest,
-                "modes": [{"id": mode.value, "available": mode in AVAILABLE_MODES} for mode in Mode],
+                "modes": [{"id": mode.value, "available": mode in app.state.service.available_modes} for mode in Mode],
                 "frontend_ready": True}
 
     @router.get("/records", response_model=list[TaskRecord], tags=["Данные"])
@@ -97,10 +112,10 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
 
     @router.get("/manual-query", tags=["Ручной ввод"])
     def manual_query_help():
-        return {"placeholder": "Добавьте условие: Статус: В работе",
-                "instruction": "Выберите подсказку или введите условие и нажмите Enter. Добавьте условия и действия, затем нажмите «Выполнить».",
-                "examples": ["Статус: В работе / На ревью", "Приоритет != Низкий", "Оценка > 8", "Дата создания >= 2026-08-01"],
-                "suggestions": suggestions(app.state.service.records)}
+        return {"placeholder": "Выберите или введите поле, например Статус",
+                "instruction": "Вся сборка запроса — в одной строке. Введите поле и значение, подтверждая Enter или Tab. После готового условия можно ввести «ИЛИ» и добавить значение того же поля, либо «И» и начать другое условие. Группировка, Итог, Экстремум и Экспорт вводятся здесь же. В конце нажмите «Выполнить».",
+                "examples": ["Статус: В работе ИЛИ На ревью", "Приоритет != Низкий", "Группировка: эпик", "Итог: количество", "Экстремум: максимум", "Экспорт: CSV"],
+                "suggestions": suggestions(app.state.service.records), "builders": builders(app.state.service.records)}
 
     @router.post("/manual-query/compile", response_model=Query, tags=["Ручной ввод"])
     def manual_query_compile(body: ManualTags):
@@ -146,6 +161,11 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         app.state.access.authorize_resource(principal, "trial", trial_id)
         return app.state.service.submit(trial_id, body)
 
+    @router.post("/trials/{trial_id}/m3-attempts", response_model=AttemptView, tags=["Пробы"])
+    def m3_attempt(trial_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        app.state.access.authorize_resource(principal, "trial", trial_id)
+        return app.state.service.submit_m3(trial_id, body)
+
     @router.post("/trials/{trial_id}/events", tags=["События"])
     def events(trial_id: str, body: EventBatch, principal: Annotated[Principal, Depends(require_principal)]):
         app.state.access.authorize_resource(principal, "trial", trial_id)
@@ -183,7 +203,7 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         return AnalyticsService(app.state.service).collect(filters)
 
     @router.get("/analytics/{table}.csv", tags=["Аналитика"])
-    def analytics_csv(table: Literal["trials", "attempts", "events", "summary"], filters: Annotated[AnalyticsFilter, Depends(analytics_filters)]):
+    def analytics_csv(table: Literal["trials", "attempts", "events", "interpretations", "summary"], filters: Annotated[AnalyticsFilter, Depends(analytics_filters)]):
         snapshot = AnalyticsService(app.state.service).collect(filters)
         return Response(table_csv(snapshot, table), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{table}.csv"'})

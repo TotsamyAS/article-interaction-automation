@@ -1,6 +1,7 @@
 """Explicit manual tag grammar for M2, without intent inference."""
 import re
 from datetime import timedelta
+from typing import Literal
 
 from pydantic import Field, ValidationError
 
@@ -16,6 +17,16 @@ OPERATORS = {":": "eq", "=": "eq", "!=": "neq", ">": "gt", "<": "lt", ">=": "gte
 
 class ManualTags(Contract):
     tags: list[str] = Field(min_length=1, max_length=40)
+
+
+class TagBuilder(Contract):
+    label: str
+    kind: Literal["filter", "action"]
+    operators: list[str]
+    values: list[str]
+    placeholder: str
+    alternatives: bool = False
+    exclusive_values: list[str] = Field(default_factory=list)
 
 
 def compile_tags(tags: list[str], records, reference_date) -> Query:
@@ -107,4 +118,30 @@ def suggestions(records):
     result.extend(["Период: 14 дней", "Дедлайн: просрочен", "Дедлайн: отсутствует", "Исполнитель: указан",
                    "Исполнитель: отсутствует", "Оценка > 8", "Сортировка: дата создания убывание",
                    "Экстремум: максимум", "Экстремум: минимум", "Экспорт: CSV"])
+    return result
+
+
+def builders(records) -> list[TagBuilder]:
+    hints = suggestions(records)
+    result = []
+    for label, field in FIELDS.items():
+        title = label.capitalize()
+        prefix = title + ": "
+        numeric = field == "estimate_hours"
+        dated = field in ("created_at", "deadline")
+        result.append(TagBuilder(
+            label=title, kind="filter",
+            operators=[":", "!=", ">", ">=", "<", "<="] if numeric or dated else [":", "!="],
+            values=[hint[len(prefix):] for hint in hints if hint.startswith(prefix)],
+            placeholder="Часы, например 8" if numeric else "Дата ГГГГ-ММ-ДД" if dated else "Выберите или введите значение",
+            alternatives=not (numeric or dated),
+            exclusive_values=["отсутствует", "указан", "просрочен"] if field == "deadline" else ["отсутствует", "указан"] if field == "assignee" else [],
+        ))
+    result.append(TagBuilder(label="Период", kind="filter", operators=[":"], values=["7 дней", "14 дней", "21 день", "30 дней", "60 дней"], placeholder="Например, 14 дней"))
+    for label, values in (
+        ("Итог", list(AGGREGATIONS)), ("Группировка", list(GROUPS)),
+        ("Экстремум", ["максимум", "минимум"]), ("Экспорт", ["CSV"]),
+        ("Сортировка", [f"{field} {direction}" for field in FIELDS if FIELDS[field] != "labels" for direction in ("возрастание", "убывание")]),
+    ):
+        result.append(TagBuilder(label=label, kind="action", operators=[":"], values=values, placeholder="Выберите или введите действие"))
     return result

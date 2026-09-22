@@ -7,10 +7,14 @@
   "seed": 20260901,
   "trial_limit_seconds": 300,
   "attempt_limit": 5,
-  "break_seconds": 120,
+  "break_seconds": 0,
   "idle_threshold_ms": 5000,
   "average_tolerance": "0.01",
   "public_base_url": "http://localhost:3033",
   "login_redirect_path": "/",
-  "access_cookie_seconds": 43200
+  "access_cookie_seconds": 43200,
+  "llm_base_url": "https://openrouter.ai/api/v1",
+  "llm_model": "openai/gpt-4.1-nano",
+  "llm_temperature": 0.0,
+  "llm_timeout_seconds": 30
 }

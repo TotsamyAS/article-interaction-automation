@@ -12,6 +12,7 @@
   } = $props();
 
   let tags = $state<string[]>([]);
+  let pendingTag = $state(false);
   let result = $state<QueryResult | null>(null);
   let message = $state('');
   let busy = $state(false);
@@ -20,7 +21,7 @@
 
   async function submit() {
     message = '';
-    if (!tags.length) { message = 'Добавьте хотя бы одно условие или действие.'; return; }
+    if (!tags.length || pendingTag) { message = 'Завершите текущее условие или отмените его ввод.'; return; }
     busy = true; onBusy(true, 'Выполняем структурированный запрос…');
     try {
       const query = await logger.measure('m2-compile', () => api<Query>('/api/manual-query/compile', {
@@ -43,9 +44,9 @@
 <div class="workbench" data-track="m2-workbench">
   <div class="workbench-heading"><div><span class="mode-pill">M2 · Form</span><h2>Конструктор запроса</h2></div></div>
   <p class="instruction">{help.instruction}</p>
-  <TagInput bind:value={tags} suggestions={help.suggestions} placeholder={help.placeholder} ariaLabel="Условия и действия запроса" allowCustom maxTags={40} />
+  <TagInput bind:value={tags} bind:pending={pendingTag} builders={help.builders} placeholder={help.placeholder} disabled={busy} maxTags={40} />
   <div class="syntax-hints"><span>Примеры синтаксиса:</span>{#each help.examples as example}<code>{example}</code>{/each}</div>
   {#if message}<p class="notice error" role="alert">{message}</p>{/if}
-  <div class="primary-actions"><button type="button" class="primary" data-track="m2-submit" disabled={busy || !tags.length} onclick={submit}>Выполнить</button></div>
+  <div class="primary-actions"><button type="button" class="primary" data-track="m2-submit" disabled={busy || !tags.length || pendingTag} onclick={submit}>Выполнить</button></div>
   {#if result}<ResultsTable {result} />{/if}
 </div>

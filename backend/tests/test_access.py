@@ -17,7 +17,7 @@ def test_missing_secret_fails_without_reading_environment():
 
 
 def test_public_endpoints_do_not_allow_access_to_experiment(settings, clock):
-    app = create_app(settings, clock, signatures_factory=lambda: Mock(spec=Signatures))
+    app = create_app(settings, clock, signatures_factory=lambda: Mock(spec=Signatures), m3_interpreter_factory=lambda *_: None)
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
         for path in ("/api/me", "/api/records", "/api/protocol", "/api/tasks", "/api/analytics",
@@ -101,7 +101,7 @@ def test_reusable_invitation_restores_progress_and_researcher_can_export(setting
     signatures = Mock(spec=Signatures)
     signatures.sign.return_value = "a" * 64
     signatures.matches.return_value = True
-    app = create_app(settings, clock, signatures_factory=lambda: signatures)
+    app = create_app(settings, clock, signatures_factory=lambda: signatures, m3_interpreter_factory=lambda *_: None)
     with TestClient(app) as invited:
         participant = app.state.access.provision("P001", "participant")
         invitation = app.state.access.invitation(participant)

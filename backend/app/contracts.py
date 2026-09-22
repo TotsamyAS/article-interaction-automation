@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 
 class Contract(BaseModel):
@@ -18,7 +18,7 @@ class Mode(StrEnum):
     M5 = "M5"
 
 
-AVAILABLE_MODES = frozenset({Mode.M1, Mode.M2})
+BASE_AVAILABLE_MODES = frozenset({Mode.M1, Mode.M2})
 
 
 class TrialStatus(StrEnum):
@@ -138,6 +138,19 @@ class AttemptInput(Contract):
     query: Query
 
 
+class M3AttemptInput(Contract):
+    request_id: UUID
+    text: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("text")
+    @classmethod
+    def non_blank_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Текст запроса не может быть пустым.")
+        return value
+
+
 class Event(Contract):
     event_id: UUID
     sequence: int = Field(ge=0)
@@ -211,6 +224,7 @@ class TrialView(Contract):
     attempts: list[AttemptSummary]
     next_event_sequence: int
     last_event_offset_ms: int
+    elapsed_since_start_ms: int
     metrics: Metrics
 
 

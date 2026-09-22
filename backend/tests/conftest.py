@@ -39,7 +39,7 @@ def service(settings, clock):
 
 @pytest.fixture
 def client(settings, clock):
-    app = create_app(settings, clock, signatures_factory=lambda: Mock(spec=Signatures))
+    app = create_app(settings, clock, signatures_factory=lambda: Mock(spec=Signatures), m3_interpreter_factory=lambda *_: None)
     app.dependency_overrides[require_principal] = lambda: Principal("test-researcher", "RESEARCHER", "researcher", 1)
     with TestClient(app) as client:
         yield client

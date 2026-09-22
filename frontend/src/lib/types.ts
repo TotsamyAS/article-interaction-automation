@@ -64,6 +64,7 @@ export interface TrialView {
   attempts: AttemptSummary[];
   next_event_sequence: number;
   last_event_offset_ms: number;
+  elapsed_since_start_ms: number;
   metrics: {
     actual: { elapsed_ms: number | null; Tcorrect_ms: number | null; Tfirst_ms: number | null; Tuser_active_ms: number; A1: number | null; attempts: number; Nretry: number };
     analysis: { Tcorrect_ms: number | null; A1: number | null; Nretry: number };
@@ -84,7 +85,11 @@ export interface SessionView {
 }
 
 export interface MeResponse { participant_code: string; role: Role; sessions: SessionView[] }
-export interface ManualQueryHelp { placeholder: string; instruction: string; examples: string[]; suggestions: string[] }
+export interface TagBuilder {
+  label: string; kind: 'filter' | 'action'; operators: string[]; values: string[];
+  placeholder: string; alternatives: boolean; exclusive_values: string[];
+}
+export interface ManualQueryHelp { placeholder: string; instruction: string; examples: string[]; suggestions: string[]; builders: TagBuilder[] }
 export interface AttemptView extends AttemptSummary {
   trial_id: string;
   trial_status: TrialStatus;
