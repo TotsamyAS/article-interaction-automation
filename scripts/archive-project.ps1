@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Create a source archive of lit-reviewer.
+Create a source archive, replacing an existing destination archive.
 .EXAMPLE
 .\scripts\archive-project.ps1 D:\Backups
 .EXAMPLE
@@ -12,6 +12,7 @@ param(
     [ValidateNotNullOrEmpty()]
     [string] $Destination,
 
+    # Retained for compatibility; existing archives are always replaced.
     [switch] $Force
 )
 
@@ -30,9 +31,6 @@ if ([System.IO.Directory]::Exists($destinationPath) -or
     $archivePath = $destinationPath
 }
 $archivePath = [System.IO.Path]::GetFullPath($archivePath)
-if ([System.IO.File]::Exists($archivePath) -and -not $Force) {
-    throw "Archive already exists: $archivePath. Use -Force to replace it."
-}
 
 # These names are excluded BEFORE reading file contents or descending into folders.
 $excludedDirectories = @(
@@ -94,8 +92,9 @@ try {
     $stream.Dispose()
     $stream = $null
     if ([System.IO.File]::Exists($archivePath)) {
-        if (-not $Force) { throw "Archive appeared while writing: $archivePath. Output was not replaced." }
-        [System.IO.File]::Replace($temporaryPath, $archivePath, $null)
+        # Windows PowerShell converts $null to an empty string for this .NET argument.
+        # NullString passes an actual null backup path; the old ZIP survives build failure.
+        [System.IO.File]::Replace($temporaryPath, $archivePath, [NullString]::Value)
     } else {
         [System.IO.File]::Move($temporaryPath, $archivePath)
     }
@@ -112,4 +111,3 @@ try {
         [System.IO.File]::Delete($temporaryPath)
     }
 }
-
