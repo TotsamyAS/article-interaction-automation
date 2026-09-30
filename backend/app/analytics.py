@@ -23,7 +23,7 @@ class AnalyticsFilter(Contract):
 
 TABLE_COLUMNS = {
     "trials": ["session_id", "participant_code", "kind", "sequence_no", "trial_id", "position", "block_index", "mode", "task_id", "level", "tci",
-               "status", "end_reason", "started_ms", "ended_ms", "elapsed_ms", "Tcorrect_actual_ms", "Tfirst_ms", "Tuser_active_ms",
+               "status", "end_reason", "trial_limit_seconds", "attempt_limit", "wording_version", "started_ms", "ended_ms", "elapsed_ms", "Tcorrect_actual_ms", "Tfirst_ms", "Tuser_active_ms",
                "A1_actual", "attempts", "Nretry_actual", "Tcorrect_analysis_ms", "A1_analysis", "Nretry_analysis", "incomplete"],
     "attempts": ["session_id", "participant_code", "kind", "trial_id", "mode", "task_id", "level", "attempt_id", "ordinal", "correct",
                  "started_ms", "finished_ms", "Texec_ms", "query", "record_ids", "aggregate", "selected_groups", "export_url"],
@@ -33,7 +33,11 @@ TABLE_COLUMNS = {
                         "status", "requested_model", "response_model", "provider", "system_fingerprint", "prompt_version", "prompt_sha256", "temperature",
                         "raw_response", "query", "error_code", "error_message",
                         "Tllm_ms", "input_tokens", "output_tokens", "started_ms", "finished_ms"],
-    "summary": ["kind", "mode", "level", "participants", "trials", "pending", "active", "completed", "correct", "incomplete", "success_rate",
+    "agent_runs": ["session_id", "participant_code", "kind", "trial_id", "mode", "task_id", "level", "request_id", "user_text",
+                   "status", "requested_model", "response_model", "provider", "prompt_version", "prompt_sha256", "temperature", "max_steps",
+                   "query", "trajectory", "final_text", "termination", "error_code", "error_message",
+                   "Tllm_ms", "Ttool_ms", "Tagent_ms", "llm_calls", "tool_calls", "input_tokens", "output_tokens", "started_ms", "finished_ms"],
+    "summary": ["kind", "mode", "level", "trial_limit_seconds", "attempt_limit", "wording_version", "participants", "trials", "pending", "active", "completed", "correct", "incomplete", "success_rate",
                 "A1_observed_n", "A1_actual_rate", "A1_analysis_rate", "Tcorrect_actual_n", "Tcorrect_actual_mean_ms",
                 "Tcorrect_analysis_mean_ms", "Tuser_active_mean_ms", "Nretry_actual_mean", "Nretry_analysis_mean"],
 }
@@ -44,7 +48,7 @@ class AnalyticsService:
         self.experiment = experiment
 
     def collect(self, filters: AnalyticsFilter) -> dict:
-        trials, attempts, events, interpretations = [], [], [], []
+        trials, attempts, events, interpretations, agent_runs = [], [], [], [], []
         # One transaction freezes a consistent snapshot of all exported tables.
         with self.experiment.database.transaction() as connection:
             sessions = connection.execute("SELECT * FROM sessions ORDER BY created_ms, id").fetchall()
@@ -68,6 +72,7 @@ class AnalyticsService:
                     actual, analysis = trial["metrics"]["actual"], trial["metrics"]["analysis"]
                     trials.append({**common, "sequence_no": session["sequence_no"], "position": trial["position"], "block_index": trial["block_index"],
                                    "tci": trial["tci"], "status": trial["status"], "end_reason": trial["end_reason"],
+                                   "trial_limit_seconds": trial["trial_limit_seconds"], "attempt_limit": trial["attempt_limit"], "wording_version": trial['wording_version'],
                                    "started_ms": trial["started_ms"], "ended_ms": trial["ended_ms"],
                                    "elapsed_ms": actual["elapsed_ms"], "Tcorrect_actual_ms": actual["Tcorrect_ms"], "Tfirst_ms": actual["Tfirst_ms"],
                                    "Tuser_active_ms": actual["Tuser_active_ms"], "A1_actual": actual["A1"], "attempts": actual["attempts"], "Nretry_actual": actual["Nretry"],
@@ -100,12 +105,26 @@ class AnalyticsService:
                                             "error_message": item["error_message"], "Tllm_ms": item["llm_ms"],
                                             "input_tokens": item["input_tokens"], "output_tokens": item["output_tokens"],
                                             "started_ms": item["started_ms"], "finished_ms": item["finished_ms"]})
+                for item in session["agent_log"]:
+                    if item["trial_id"] not in selected:
+                        continue
+                    agent_runs.append({**selected[item["trial_id"]], "request_id": item["request_id"], "user_text": item["user_text"],
+                                       "status": item["status"], "requested_model": item["requested_model"],
+                                       "response_model": item["response_model"], "provider": item["provider"],
+                                       "prompt_version": item["prompt_version"], "prompt_sha256": item["prompt_sha256"],
+                                       "temperature": item["temperature"], "max_steps": item["max_steps"], "query": item["query"],
+                                       "trajectory": item["trajectory"], "final_text": item["final_text"], "termination": item["termination"],
+                                       "error_code": item["error_code"], "error_message": item["error_message"],
+                                       "Tllm_ms": item["llm_ms"], "Ttool_ms": item["tool_ms"], "Tagent_ms": item["total_ms"],
+                                       "llm_calls": item["llm_calls"], "tool_calls": item["tool_calls"],
+                                       "input_tokens": item["input_tokens"], "output_tokens": item["output_tokens"],
+                                       "started_ms": item["started_ms"], "finished_ms": item["finished_ms"]})
             generated = self.experiment.clock()
-        return {"protocol": {"export_schema_version": 3, "generated_at_ms": generated, "filters": filters.model_dump(mode="json"),
+        return {"protocol": {"export_schema_version": 5, "generated_at_ms": generated, "filters": filters.model_dump(mode="json"),
                              "manifest": self.experiment.manifest, "time_units": "milliseconds", "missing_value": "empty cell / JSON null",
                              "summary_population": "terminal trials only; actual Tcorrect includes successful trials only",
                              "training_excluded": not filters.include_practice},
-                "trials": trials, "attempts": attempts, "events": events, "interpretations": interpretations, "summary": summarize(trials)}
+                "trials": trials, "attempts": attempts, "events": events, "interpretations": interpretations, "agent_runs": agent_runs, "summary": summarize(trials)}
 
 
 def _mean(rows, field):
@@ -116,12 +135,13 @@ def _mean(rows, field):
 def summarize(trials: list[dict]) -> list[dict]:
     grouped = defaultdict(list)
     for trial in trials:
-        grouped[(trial["kind"], trial["mode"], trial["level"])].append(trial)
+        grouped[(trial["kind"], trial["mode"], trial["level"], trial['trial_limit_seconds'], trial['attempt_limit'], trial['wording_version'])].append(trial)
     result = []
-    for (kind, mode, level), rows in sorted(grouped.items()):
+    for (kind, mode, level, time_limit, attempt_limit, wording), rows in sorted(grouped.items()):
         terminal = [row for row in rows if row["status"] in ("correct", "incomplete")]
         success = [row for row in terminal if row["status"] == "correct"]
         result.append({"kind": kind, "mode": mode, "level": level, "participants": len({row["participant_code"] for row in terminal}),
+                       'trial_limit_seconds': time_limit, 'attempt_limit': attempt_limit, 'wording_version': wording,
                        "trials": len(rows), "pending": sum(row["status"] == "pending" for row in rows), "active": sum(row["status"] == "active" for row in rows),
                        "completed": len(terminal), "correct": len(success), "incomplete": len(terminal) - len(success),
                        "success_rate": len(success) / len(terminal) if terminal else None,

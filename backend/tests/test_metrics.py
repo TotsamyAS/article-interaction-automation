@@ -15,3 +15,11 @@ def test_active_time_excludes_idle_blur_and_overlapping_requests():
               for i, (kind, offset, request) in enumerate(raw)]
     # [0,5000] minus request union [500,2500] and blur [3500,4500], plus [11000,12000].
     assert active_time_ms(events, 12000, 5000) == 3000
+
+
+def test_active_time_counts_speech_interval_even_when_longer_than_idle_threshold():
+    events = [
+        Event(event_id=uuid4(), sequence=0, kind="speech_started", target="m4-speech", offset_ms=1000),
+        Event(event_id=uuid4(), sequence=1, kind="speech_finished", target="m4-speech", offset_ms=9000),
+    ]
+    assert active_time_ms(events, 10000, 5000) == 8000

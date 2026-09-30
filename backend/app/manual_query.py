@@ -7,10 +7,11 @@ from pydantic import Field, ValidationError
 
 from .contracts import Contract, Filter, Query
 from .errors import DomainError
+from .terminology import FIELD_ALIASES, display_text, stored_value
 
-FIELDS = {"статус": "status", "приоритет": "priority", "исполнитель": "assignee", "эпик": "epic",
-          "спринт": "sprint", "метка": "labels", "дата создания": "created_at", "дедлайн": "deadline", "оценка": "estimate_hours"}
-GROUPS = {"эпик": "epic", "спринт": "sprint", "исполнитель": "assignee", "статус": "status", "приоритет": "priority"}
+FIELDS = {"статус": "status", "приоритет": "priority", "исполнитель": "assignee", "направление работ": "epic",
+          "рабочий цикл": "sprint", "метка": "labels", "дата создания": "created_at", "дедлайн": "deadline", "оценка": "estimate_hours"}
+GROUPS = {name: FIELDS[name] for name in ('направление работ', 'рабочий цикл', 'исполнитель', 'статус', 'приоритет')}
 AGGREGATIONS = {"количество": "COUNT", "сумма часов": "SUM", "средняя оценка": "AVG", "максимальная оценка": "MAX", "минимальная оценка": "MIN"}
 OPERATORS = {":": "eq", "=": "eq", "!=": "neq", ">": "gt", "<": "lt", ">=": "gte", "<=": "lte"}
 
@@ -21,6 +22,7 @@ class ManualTags(Contract):
 
 class TagBuilder(Contract):
     label: str
+    aliases: list[str] = Field(default_factory=list)
     kind: Literal["filter", "action"]
     operators: list[str]
     values: list[str]
@@ -40,6 +42,7 @@ def compile_tags(tags: list[str], records, reference_date) -> Query:
             raise DomainError("invalid_tag", f"Условие {index + 1}: используйте формат «Поле: значение».")
         name, operator, value = match.groups()
         name = name.strip().casefold()
+        name = FIELD_ALIASES.get(name, name)
         value = value.strip()
         folded = value.casefold()
         if name not in FIELDS:
@@ -57,17 +60,17 @@ def compile_tags(tags: list[str], records, reference_date) -> Query:
             elif name == "итог" and folded in AGGREGATIONS:
                 query.grouping.aggregation = AGGREGATIONS[folded]
                 query.grouping.aggregation_field = None if folded == "количество" else "estimate_hours"
-            elif name == "группировка" and folded in GROUPS:
-                query.grouping.field = GROUPS[folded]
+            elif name == "группировка" and FIELD_ALIASES.get(folded, folded) in GROUPS:
+                query.grouping.field = GROUPS[FIELD_ALIASES.get(folded, folded)]
             elif name == "экстремум" and folded in ("максимум", "минимум"):
                 query.extremum.direction = "max" if folded == "максимум" else "min"
             elif name == "экспорт" and folded == "csv":
                 query.output.format = "csv"
             elif name == "сортировка":
                 sort = re.fullmatch(r"(.+?)\s+(возрастание|убывание)", folded)
-                if not sort or sort[1] not in FIELDS:
+                if not sort or FIELD_ALIASES.get(sort[1], sort[1]) not in FIELDS:
                     raise DomainError("invalid_tag", "Сортировка: укажите поле и «возрастание» или «убывание».")
-                query.sorting.field = FIELDS[sort[1]]
+                query.sorting.field = FIELDS[FIELD_ALIASES.get(sort[1], sort[1])]
                 query.sorting.direction = "asc" if sort[2] == "возрастание" else "desc"
             else:
                 raise DomainError("invalid_tag", f"Операция {index + 1} не распознана. Выберите вариант из подсказок.")
@@ -80,7 +83,7 @@ def compile_tags(tags: list[str], records, reference_date) -> Query:
             query.filters.append(Filter(field=field, operator="lt", value=reference_date.isoformat()))
             continue
         op = OPERATORS[operator]
-        values = [part.strip() for part in value.split("/")]
+        values = [stored_value(field, part.strip()) for part in value.split("/")]
         if any(not part for part in values) or (len(values) > 1 and op not in ("eq", "neq")):
             raise DomainError("invalid_tag", f"Условие {index + 1}: неверный список альтернатив.")
         if field == "estimate_hours":
@@ -112,7 +115,7 @@ def suggestions(records):
             continue
         values = sorted({str(value) for record in records for value in
                          (record.labels if field == "labels" else [getattr(record, field)]) if value is not None})
-        result.extend(f"{label.capitalize()}: {value}" for value in values)
+        result.extend(f"{label.capitalize()}: {display_text(value) if field == 'sprint' else value}" for value in values)
     result.extend(f"Итог: {label}" for label in AGGREGATIONS)
     result.extend(f"Группировка: {label}" for label in GROUPS)
     result.extend(["Период: 14 дней", "Дедлайн: просрочен", "Дедлайн: отсутствует", "Исполнитель: указан",
@@ -131,6 +134,7 @@ def builders(records) -> list[TagBuilder]:
         dated = field in ("created_at", "deadline")
         result.append(TagBuilder(
             label=title, kind="filter",
+            aliases=[old.capitalize() for old, new in FIELD_ALIASES.items() if new == label],
             operators=[":", "!=", ">", ">=", "<", "<="] if numeric or dated else [":", "!="],
             values=[hint[len(prefix):] for hint in hints if hint.startswith(prefix)],
             placeholder="Часы, например 8" if numeric else "Дата ГГГГ-ММ-ДД" if dated else "Выберите или введите значение",

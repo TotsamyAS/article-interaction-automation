@@ -2,9 +2,7 @@
 .SYNOPSIS
 Create a source archive, replacing an existing destination archive.
 .EXAMPLE
-.\scripts\archive-project.ps1 D:\Backups
-.EXAMPLE
-.\scripts\archive-project.ps1 D:\Backups\review-demo.zip -Force
+.\scripts\archive-project.ps1 D:\Pet_Codes\[ARCHIVING]
 #>
 [CmdletBinding()]
 param(

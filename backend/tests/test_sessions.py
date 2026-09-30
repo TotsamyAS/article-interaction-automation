@@ -33,34 +33,34 @@ def test_schedule_balanced_without_variant_repeats(service):
 
 def test_attempt_limit_keeps_facts_and_penalty_separate(service, clock):
     _, trial = first_trial(service)
-    for _ in range(5):
+    for _ in range(25):
         clock.advance(8000)
         result = submit(service, trial)
         assert not result["correct"]
     view = service.trial(trial["id"])
     assert view["end_reason"] == "attempt_limit"
-    assert view["metrics"]["actual"]["elapsed_ms"] == 40000
-    assert view["metrics"]["actual"]["attempts"] == 5
-    assert view["metrics"]["actual"]["Nretry"] == 4
+    assert view["metrics"]["actual"]["elapsed_ms"] == 200000
+    assert view["metrics"]["actual"]["attempts"] == 25
+    assert view["metrics"]["actual"]["Nretry"] == 24
     assert view["metrics"]["actual"]["Tcorrect_ms"] is None
-    assert view["metrics"]["analysis"] == {"Tcorrect_ms": 300000, "A1": 0, "Nretry": 4}
+    assert view["metrics"]["analysis"] == {"Tcorrect_ms": 1500000, "A1": 0, "Nretry": 24}
 
 
 def test_timeout_after_one_attempt_has_no_actual_retries(service, clock):
     _, trial = first_trial(service)
     submit(service, trial)
-    clock.advance(300000)
+    clock.advance(1500000)
     view = service.trial(trial["id"])
     assert view["end_reason"] == "time_limit"
     assert view["metrics"]["actual"]["Nretry"] == 0
-    assert view["metrics"]["analysis"]["Nretry"] == 4
+    assert view["metrics"]["analysis"]["Nretry"] == 24
     with pytest.raises(DomainError):
         submit(service, trial, service.catalog[trial["task_id"]].query)
 
 
-def test_success_on_fifth_attempt_is_success(service, clock):
+def test_success_on_twenty_fifth_attempt_is_success(service, clock):
     _, trial = first_trial(service)
-    for _ in range(4):
+    for _ in range(24):
         submit(service, trial)
     clock.advance(5000)
     assert submit(service, trial, service.catalog[trial["task_id"]].query)["correct"]
@@ -195,3 +195,45 @@ def test_break_migration_preserves_progress_and_records_previous_policy(service,
     assert changes[0]["previous_value"] == "120"
     assert changes[0]["new_value"] == "0"
     assert changes[0]["changed_at_ms"] > 0
+
+
+def test_limits_migration_preserves_terminal_metrics_and_upgrades_unfinished_trials(service, settings, clock):
+    session, trial = first_trial(service)
+    with service.database.transaction() as connection:
+        connection.execute("UPDATE trials SET trial_limit_seconds=300, attempt_limit=5, wording_version='legacy'")
+    submit(service, trial)
+    clock.advance(300000)
+    before = service.trial(trial['id'])
+    assert before['metrics']['analysis'] == {'Tcorrect_ms': 300000, 'A1': 0, 'Nretry': 4}
+    active = service.start_trial(session['trials'][1]['id'])
+    with service.database.transaction() as connection:
+        connection.execute("UPDATE dataset SET manifest=json_set(manifest, '$.protocol.trial_limit_seconds', 300, '$.protocol.attempt_limit', 5)")
+        connection.execute("DELETE FROM schema_migrations WHERE version=6")
+        for column in ('trial_limit_seconds', 'attempt_limit', 'wording_version'):
+            connection.execute(f'ALTER TABLE trials DROP COLUMN {column}')
+    database = Database(settings)
+    database.initialize()
+    database.initialize()
+    restarted = ExperimentService(database, clock)
+    after = restarted.trial(trial['id'])
+    assert after['metrics'] == before['metrics']
+    assert after['attempts'] == before['attempts']
+    assert (after['trial_limit_seconds'], after['attempt_limit'], after['wording_version']) == (300, 5, 'legacy')
+    upgraded = restarted.trial(active['id'])
+    assert upgraded['started_ms'] == active['started_ms']
+    assert upgraded['deadline_ms'] - upgraded['started_ms'] == 1500000
+    assert upgraded['attempt_limit'] == 25
+    pending = restarted.trial(session['trials'][2]['id'])
+    assert pending['trial_limit_seconds'] == 1500 and pending['attempt_limit'] == 25
+    assert len([row for row in restarted.manifest['protocol_changes'] if row['setting'] == 'trial_limits']) == 1
+    from app.analytics import AnalyticsService, AnalyticsFilter
+    rows = AnalyticsService(restarted).collect(AnalyticsFilter())['summary']
+    assert {row['trial_limit_seconds'] for row in rows} == {300, 1500}
+
+
+def test_new_limit_expires_at_twenty_five_minutes_not_five(service, clock):
+    _, trial = first_trial(service)
+    clock.advance(1499999)
+    assert service.trial(trial['id'])['status'] == 'active'
+    clock.advance(1)
+    assert service.trial(trial['id'])['end_reason'] == 'time_limit'

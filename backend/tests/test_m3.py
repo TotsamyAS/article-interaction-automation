@@ -61,7 +61,7 @@ def test_prompt_is_domain_compiler_and_schema_is_strict(settings):
     assert schema["additionalProperties"] is False
 
 
-def test_openai_compatible_request_uses_strict_schema_and_small_model(settings, monkeypatch):
+def test_routerai_request_uses_strict_schema_and_configured_model(settings, monkeypatch):
     database = Database(settings)
     database.initialize()
     service = ExperimentService(database)
@@ -70,7 +70,7 @@ def test_openai_compatible_request_uses_strict_schema_and_small_model(settings, 
         "model": settings.llm_model,
         "choices": [{"message": {"content": json.dumps(query.model_dump(mode="json"))}}],
         "system_fingerprint": "fp-live-test",
-        "openrouter_metadata": {"endpoints": {"available": [{"provider": "OpenAI", "selected": True}]}},
+        "provider": "Google",
         "usage": {"prompt_tokens": 10, "completion_tokens": 5},
     }).encode()
     captured = {}
@@ -98,14 +98,14 @@ def test_openai_compatible_request_uses_strict_schema_and_small_model(settings, 
     )
     result = interpreter.interpret("Покажи задачи")
     assert result.query == query
-    assert result.provider == "OpenAI"
+    assert result.provider == "Google"
     assert result.system_fingerprint == "fp-live-test"
     assert captured["url"].endswith("/chat/completions")
-    assert captured["payload"]["model"] == "openai/gpt-4.1-nano"
+    assert captured["payload"]["model"] == settings.llm_model
     assert captured["payload"]["temperature"] == 0
     assert captured["payload"]["seed"] == 0
-    assert captured["payload"]["provider"] == {"require_parameters": True}
-    assert captured["headers"]["X-openrouter-metadata"] == "enabled"
+    assert "provider" not in captured["payload"]
+    assert "X-openrouter-metadata" not in {key.lower(): value for key, value in captured["headers"].items()}
     assert captured["payload"]["response_format"]["type"] == "json_schema"
     assert captured["payload"]["response_format"]["json_schema"]["strict"] is True
 
@@ -118,7 +118,7 @@ def test_invalid_structured_response_keeps_diagnostics(settings, monkeypatch):
         "model": settings.llm_model,
         "choices": [{"message": {"content": "{not-json"}}],
         "system_fingerprint": "fp-bad",
-        "openrouter_metadata": {"endpoints": {"available": [{"provider": "Azure", "selected": True}]}},
+        "provider_name": "Google",
         "usage": {"prompt_tokens": 20, "completion_tokens": 3},
     }).encode()
 
@@ -141,7 +141,7 @@ def test_invalid_structured_response_keeps_diagnostics(settings, monkeypatch):
     error = caught.value
     assert error.code == "llm_invalid_response"
     assert error.raw_response == "{not-json"
-    assert error.provider == "Azure"
+    assert error.provider == "Google"
     assert error.system_fingerprint == "fp-bad"
     assert error.input_tokens == 20 and error.output_tokens == 3
 
@@ -208,7 +208,7 @@ def test_m3_api_is_available_when_interpreter_is_configured(settings, clock):
     app.dependency_overrides[require_principal] = lambda: Principal("researcher", "R", "researcher", 1)
     with TestClient(app) as client:
         modes = {item["id"]: item["available"] for item in client.get("/api/protocol").json()["modes"]}
-        assert modes["M3"] is True and modes["M4"] is False and modes["M5"] is False
+        assert modes["M3"] is True and modes["M4"] is True and modes["M5"] is False
         client.post("/api/sessions", json={"participant_code": "P0"})
         client.post("/api/sessions", json={"participant_code": "P1"})
         session = client.post("/api/sessions", json={"participant_code": "P2"}).json()

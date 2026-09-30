@@ -81,7 +81,7 @@ def test_invitation_exchange_reuses_identity_without_minting_real_credentials(cl
     for _ in range(2):
         response = client.get("/api/access/enter?invitation=", follow_redirects=False)
         assert response.status_code == 303
-        assert response.headers["location"] == client.app.state.service.settings.login_redirect_path
+        assert response.headers["location"] == client.app.state.service.settings.login_redirect_path + '?access=' + principal.id
         assert "HttpOnly" in response.headers["set-cookie"]
         assert "SameSite=lax" in response.headers["set-cookie"]
         assert response.headers["referrer-policy"] == "no-referrer"
@@ -129,3 +129,29 @@ def test_reusable_invitation_restores_progress_and_researcher_can_export(setting
         assert export.headers["content-type"].startswith(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
+
+def test_tab_context_selects_its_own_cookie_and_never_borrows_another_identity():
+    # Cookie contents are opaque mock objects, never real credentials.
+    from app.access import COOKIE_NAME
+    first = Principal(str(uuid4()), 'P1', 'participant', 1)
+    second = Principal(str(uuid4()), 'P2', 'participant', 1)
+    first_cookie, second_cookie = object(), object()
+    request = Mock()
+    request.headers = {'X-Access-Context': first.id}
+    request.query_params = {}
+    request.cookies = {f'{COOKIE_NAME}_{first.id}': first_cookie,
+                       f'{COOKIE_NAME}_{second.id}': second_cookie, COOKIE_NAME: second_cookie}
+    request.app.state.access.validate.side_effect = lambda value, purpose: first if value is first_cookie else second
+    assert require_principal(request) == first
+    request.headers = {'X-Access-Context': second.id}
+    assert require_principal(request) == second
+    request.headers = {}
+    request.query_params = {'access': first.id}  # Download links use the same authorization.
+    assert require_principal(request) == first
+    del request.cookies[f'{COOKIE_NAME}_{first.id}']
+    with pytest.raises(DomainError):
+        require_principal(request)
+    request.query_params = {'access': 'invalid-context'}
+    with pytest.raises(DomainError):
+        require_principal(request)

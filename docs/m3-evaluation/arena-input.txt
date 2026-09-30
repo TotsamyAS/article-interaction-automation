@@ -1,0 +1,328 @@
+Ниже инструкции для преобразования запроса в JSON, затем схема и запрос пользователя. Верни только JSON, без Markdown.
+
+ИНСТРУКЦИИ:
+Ты компилятор запроса к фиксированной базе задач. Верни только объект Query по JSON Schema. Не отвечай на задачу сам и не добавляй условия, которых нет в запросе пользователя.
+
+Дата эксперимента D0: 2026-09-01. Все относительные даты считай от D0, а не от текущей даты.
+
+Поля:
+- status: В работе, Готово, На ревью, Открыта, Отменена
+- priority: Высокий, Критический, Низкий, Средний
+- epic: Авторизация, Инфраструктура, Платежи, Профиль, Уведомления
+- sprint: Спринт 1, Спринт 10, Спринт 2, Спринт 3, Спринт 4, Спринт 5, Спринт 6, Спринт 7, Спринт 8, Спринт 9
+- assignee: Участник 1, Участник 2, Участник 3, Участник 4, Участник 5, Участник 6, Участник 7; может отсутствовать
+- labels: баг, документация, рефакторинг, фича; это множество меток
+- created_at, deadline: дата YYYY-MM-DD; deadline может отсутствовать
+- estimate_hours: целое число часов
+
+Канонические правила:
+1. Независимые условия соединяй AND. Альтернативы одного поля через «или» кодируй одним filter с operator=in и массивом значений. Не используй logic=OR, если достаточно in.
+2. «За последние N дней» -> created_at >= D0-N дней И created_at <= D0, обе границы включены. «Исключить созданные более N дней назад» -> created_at >= D0-N дней.
+3. «Просроченные» -> deadline < D0. «Без дедлайна» -> deadline is_null. «Исключить задачи без исполнителя» -> assignee not_null.
+4. Для labels operator=eq означает наличие метки, neq — отсутствие метки.
+5. COUNT не требует aggregation_field. Для SUM/AVG/MAX/MIN aggregation_field всегда estimate_hours.
+6. Если требуется только агрегат без группировки, grouping.field=null. Если требуется «сгруппировать ... и найти группу с наибольшим/наименьшим ...», задай grouping, соответствующий aggregation, extremum.direction, extremum.metric и output.scope=extremum_group.
+7. Если требуется экспорт, output.format=csv. Иначе table. Без экстремума output.scope=all_records, кроме явно требуемого aggregate_only.
+8. Сортировку задавай только если она явно запрошена. Иначе sorting.field=null и sorting.direction=null.
+9. Не придумывай значения. Используй только перечисленные категориальные значения и точные числовые/датовые условия из текста.
+10. Перед ответом молча проверь: все явно запрошенные фильтры учтены; лишних фильтров нет; агрегат/группировка/экстремум согласованы; экспорт не потерян.
+
+Примеры формата (это НЕ экспериментальные задания):
+
+Запрос: «Покажи критические задачи эпика Профиль»
+Ответ: {"filters":[{"field":"priority","operator":"eq","value":"Критический","logic":"AND"},{"field":"epic","operator":"eq","value":"Профиль","logic":"AND"}],"grouping":{"field":null,"aggregation":null,"aggregation_field":null},"extremum":{"direction":null,"metric":null},"sorting":{"field":null,"direction":null},"output":{"format":"table","scope":"all_records"}}
+
+Запрос: «В Уведомлениях покажи открытые или готовые задачи за последние 10 дней и посчитай их»
+Ответ: {"filters":[{"field":"epic","operator":"eq","value":"Уведомления","logic":"AND"},{"field":"status","operator":"in","value":["Открыта","Готово"],"logic":"AND"},{"field":"created_at","operator":"gte","value":"2026-08-22","logic":"AND"},{"field":"created_at","operator":"lte","value":"2026-09-01","logic":"AND"}],"grouping":{"field":null,"aggregation":"COUNT","aggregation_field":null},"extremum":{"direction":null,"metric":null},"sorting":{"field":null,"direction":null},"output":{"format":"table","scope":"all_records"}}
+
+Запрос: «Исключи отменённые, сгруппируй по приоритету, найди приоритет с максимальной средней оценкой задач с оценкой больше 6 часов и экспортируй»
+Ответ: {"filters":[{"field":"status","operator":"neq","value":"Отменена","logic":"AND"},{"field":"estimate_hours","operator":"gt","value":6,"logic":"AND"}],"grouping":{"field":"priority","aggregation":"AVG","aggregation_field":"estimate_hours"},"extremum":{"direction":"max","metric":"avg"},"sorting":{"field":null,"direction":null},"output":{"format":"csv","scope":"extremum_group"}}
+
+Запрос: «Задачи без дедлайна с критическим приоритетом и без метки баг: сгруппируй по эпикам, найди эпик с наибольшим количеством и экспортируй»
+Ответ: {"filters":[{"field":"deadline","operator":"is_null","value":null,"logic":"AND"},{"field":"priority","operator":"eq","value":"Критический","logic":"AND"},{"field":"labels","operator":"neq","value":"баг","logic":"AND"}],"grouping":{"field":"epic","aggregation":"COUNT","aggregation_field":null},"extremum":{"direction":"max","metric":"count"},"sorting":{"field":null,"direction":null},"output":{"format":"csv","scope":"extremum_group"}}
+
+JSON SCHEMA:
+{
+  "$defs": {
+    "Extremum": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "anyOf": [
+            {
+              "enum": [
+                "max",
+                "min"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metric": {
+          "anyOf": [
+            {
+              "enum": [
+                "count",
+                "sum",
+                "avg",
+                "max",
+                "min"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "required": [
+        "direction",
+        "metric"
+      ]
+    },
+    "Filter": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "enum": [
+            "id",
+            "title",
+            "status",
+            "priority",
+            "assignee",
+            "epic",
+            "sprint",
+            "created_at",
+            "deadline",
+            "labels",
+            "estimate_hours"
+          ],
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            "eq",
+            "neq",
+            "gt",
+            "lt",
+            "gte",
+            "lte",
+            "in",
+            "not_in",
+            "is_null",
+            "not_null"
+          ],
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logic": {
+          "enum": [
+            "AND",
+            "OR"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "operator",
+        "value",
+        "logic"
+      ],
+      "type": "object"
+    },
+    "Grouping": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "status",
+                "priority",
+                "assignee",
+                "epic",
+                "sprint"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aggregation": {
+          "anyOf": [
+            {
+              "enum": [
+                "COUNT",
+                "SUM",
+                "AVG",
+                "MAX",
+                "MIN"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aggregation_field": {
+          "anyOf": [
+            {
+              "const": "estimate_hours",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "required": [
+        "field",
+        "aggregation",
+        "aggregation_field"
+      ]
+    },
+    "Output": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "enum": [
+            "table",
+            "csv",
+            "chart",
+            "summary"
+          ],
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "all_records",
+            "extremum_group",
+            "aggregate_only"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "required": [
+        "format",
+        "scope"
+      ]
+    },
+    "Sorting": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "id",
+                "title",
+                "status",
+                "priority",
+                "assignee",
+                "epic",
+                "sprint",
+                "created_at",
+                "deadline",
+                "labels",
+                "estimate_hours"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "required": [
+        "field",
+        "direction"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "filters": {
+      "items": {
+        "$ref": "#/$defs/Filter"
+      },
+      "maxItems": 40,
+      "type": "array"
+    },
+    "grouping": {
+      "$ref": "#/$defs/Grouping"
+    },
+    "extremum": {
+      "$ref": "#/$defs/Extremum"
+    },
+    "sorting": {
+      "$ref": "#/$defs/Sorting"
+    },
+    "output": {
+      "$ref": "#/$defs/Output"
+    }
+  },
+  "type": "object",
+  "required": [
+    "filters",
+    "grouping",
+    "extremum",
+    "sorting",
+    "output"
+  ]
+}
+
+ЗАПРОС ПОЛЬЗОВАТЕЛЯ:
+Исключи задачи с низким приоритетом. Оставь открытые задачи. Сгруппируй по рабочим циклам, найди цикл с наибольшим количеством таких задач и экспортируй их в CSV.

@@ -47,7 +47,7 @@ def test_manual_tags_reproduce_canonical_task_result(settings, task_id):
 def test_manual_tag_suggestions_cover_required_operation_shapes(settings):
     available = suggestions(generate_dataset(settings))
     for expected in ("Период: 14 дней", "Дедлайн: просрочен", "Исполнитель: указан",
-                     "Итог: количество", "Группировка: эпик", "Экстремум: максимум", "Экспорт: CSV"):
+                     "Итог: количество", "Группировка: направление работ", "Экстремум: максимум", "Экспорт: CSV"):
         assert expected in available
 
 
@@ -75,3 +75,23 @@ def test_linked_builder_vocabulary_compiles_to_shared_query(client):
     assert query["filters"][1]["logic"] == "AND"
     assert query["filters"][1]["operator"] == "neq"
     assert query["grouping"]["aggregation"] == "COUNT"
+
+
+@pytest.mark.parametrize('task_id', sorted(TASK_TAGS))
+def test_new_project_terms_preserve_all_fifteen_canonical_answers(settings, task_id):
+    from app.terminology import display_text
+    records = generate_dataset(settings)
+    original = compile_tags(TASK_TAGS[task_id], records, settings.reference_date)
+    renamed = compile_tags([display_text(tag) for tag in TASK_TAGS[task_id]], records, settings.reference_date)
+    assert renamed == original
+
+
+def test_builder_exposes_new_terms_and_legacy_field_aliases(client):
+    options = {item['label']: item for item in client.get('/api/manual-query').json()['builders']}
+    assert 'Эпик' not in options and 'Спринт' not in options
+    assert options['Направление работ']['aliases'] == ['Эпик']
+    assert options['Рабочий цикл']['aliases'] == ['Спринт']
+    assert 'Рабочий цикл 5' in options['Рабочий цикл']['values']
+    assert 'Дедлайн' in options
+    prompts = [task['prompt'] for task in client.get('/api/tasks').json()]
+    assert not any('эпик' in prompt.lower() or 'спринт' in prompt.lower() for prompt in prompts)

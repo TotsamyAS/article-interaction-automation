@@ -33,36 +33,37 @@ def test_analytics_exports_preserve_actual_and_penalty_and_exclude_training(clie
     _, trial = create_started(client)
     response = client.post(f'/api/trials/{trial["id"]}/attempts', json={"request_id": str(uuid4()), "query": {}})
     assert response.status_code == 200
-    clock.advance(300000)
+    clock.advance(1500000)
     create_started(client, "TRAINING", "practice")
     snapshot = client.get("/api/analytics?completed_only=true").json()
     assert len(snapshot["trials"]) == 1
     row = snapshot["trials"][0]
-    assert row["Nretry_actual"] == 0 and row["Nretry_analysis"] == 4
-    assert row["Tcorrect_actual_ms"] is None and row["Tcorrect_analysis_ms"] == 300000
+    assert row["Nretry_actual"] == 0 and row["Nretry_analysis"] == 24
+    assert row["trial_limit_seconds"] == 1500 and row["attempt_limit"] == 25
+    assert row["Tcorrect_actual_ms"] is None and row["Tcorrect_analysis_ms"] == 1500000
     assert snapshot["summary"][0]["Tcorrect_actual_mean_ms"] is None
-    assert snapshot["summary"][0]["Tcorrect_analysis_mean_ms"] == 300000
+    assert snapshot["summary"][0]["Tcorrect_analysis_mean_ms"] == 1500000
     assert snapshot["protocol"]["training_excluded"]
 
     raw = client.get("/api/analytics/trials.csv?completed_only=true")
     assert raw.status_code == 200
     rows = list(csv.DictReader(io.StringIO(raw.content.decode("utf-8-sig"))))
-    assert rows[0]["Nretry_actual"] == "0" and rows[0]["Nretry_analysis"] == "4"
+    assert rows[0]["Nretry_actual"] == "0" and rows[0]["Nretry_analysis"] == "24"
 
     archive_response = client.get("/api/analytics/export.zip?completed_only=true")
     assert archive_response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(archive_response.content)) as archive:
-        assert set(archive.namelist()) == {"trials.csv", "attempts.csv", "events.csv", "interpretations.csv", "summary.csv", "protocol.json"}
+        assert set(archive.namelist()) == {"trials.csv", "attempts.csv", "events.csv", "interpretations.csv", "agent_runs.csv", "summary.csv", "protocol.json"}
         assert json.loads(archive.read("protocol.json"))["manifest"]["dataset_sha256"]
 
     workbook_response = client.get("/api/analytics/export.xlsx?completed_only=true")
     assert workbook_response.status_code == 200
     workbook = load_workbook(io.BytesIO(workbook_response.content), read_only=True)
-    assert set(workbook.sheetnames) == {"protocol", "trials", "attempts", "events", "interpretations", "summary"}
+    assert set(workbook.sheetnames) == {"protocol", "trials", "attempts", "events", "interpretations", "agent_runs", "summary"}
     values = list(workbook["trials"].values)
     excel_row = dict(zip(values[0], values[1]))
     assert excel_row["Nretry_actual"] == 0
-    assert excel_row["Nretry_analysis"] == 4
+    assert excel_row["Nretry_analysis"] == 24
     assert excel_row["Tcorrect_actual_ms"] is None
     workbook.close()
 

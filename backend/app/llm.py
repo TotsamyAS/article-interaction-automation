@@ -15,13 +15,13 @@ from pydantic import ValidationError
 
 from .contracts import Query, TaskRecord
 
-PROMPT_VERSION = "m3-query-v2"
+PROMPT_VERSION = "m3-query-v3"
 
 
 def key_from_runtime() -> str:
-    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    key = os.environ.get("ROUTERAI_API_KEY", "").strip()
     if not key:
-        raise RuntimeError("OPENROUTER_API_KEY is required for M3. Set it in the root .env file.")
+        raise RuntimeError("ROUTERAI_API_KEY is required for M3/M4/M5. Set it in the root .env file.")
     return key
 
 
@@ -88,8 +88,8 @@ def build_system_prompt(records: list[TaskRecord], reference_date) -> str:
 Поля:
 - status: {', '.join(allowed['status'])}
 - priority: {', '.join(allowed['priority'])}
-- epic: {', '.join(allowed['epic'])}
-- sprint: {', '.join(allowed['sprint'])}
+- epic (в интерфейсе «Направление работ»): {', '.join(allowed['epic'])}
+- sprint (в интерфейсе «Рабочий цикл»): {', '.join(allowed['sprint'])}; «Рабочий цикл N» означает «Спринт N»
 - assignee: {', '.join(allowed['assignee'])}; может отсутствовать
 - labels: {', '.join(allowed['labels'])}; это множество меток
 - created_at, deadline: дата YYYY-MM-DD; deadline может отсутствовать
@@ -165,14 +165,18 @@ def _system_fingerprint(payload: dict[str, Any] | None) -> str | None:
 
 
 def _response_provider(payload: dict[str, Any] | None) -> str | None:
-    metadata = payload.get("openrouter_metadata") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    direct = payload.get("provider") or payload.get("provider_name")
+    if direct:
+        return str(direct)
+    metadata = payload.get("openrouter_metadata")
     endpoints = metadata.get("endpoints") if isinstance(metadata, dict) else None
     available = endpoints.get("available") if isinstance(endpoints, dict) else None
-    if not isinstance(available, list):
-        return None
-    for endpoint in available:
-        if isinstance(endpoint, dict) and endpoint.get("selected") is True and endpoint.get("provider"):
-            return str(endpoint["provider"])
+    if isinstance(available, list):
+        for endpoint in available:
+            if isinstance(endpoint, dict) and endpoint.get("selected") is True and endpoint.get("provider"):
+                return str(endpoint["provider"])
     return None
 
 
@@ -201,7 +205,6 @@ class OpenAICompatibleInterpreter:
                 "type": "json_schema",
                 "json_schema": {"name": "experiment_query", "strict": True, "schema": self.schema},
             },
-            "provider": {"require_parameters": True},
         }
         request = urllib.request.Request(
             self.endpoint,
@@ -209,7 +212,6 @@ class OpenAICompatibleInterpreter:
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
-                "X-OpenRouter-Metadata": "enabled",
             },
             method="POST",
         )

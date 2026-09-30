@@ -138,10 +138,18 @@ class AccessService:
 
 
 def require_principal(request: Request) -> Principal:
-    value = request.cookies.get(COOKIE_NAME)
+    context = request.headers.get('X-Access-Context') or request.query_params.get('access')
+    if context and not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', context):
+        raise denied()
+    value = request.cookies.get(f'{COOKIE_NAME}_{context}') if context else None
+    # Old clients/links retain their cookie; an explicit context must match its owner.
+    value = value or request.cookies.get(COOKIE_NAME)
     if not value:
         raise denied()
-    return request.app.state.access.validate(value, "session")
+    principal = request.app.state.access.validate(value, "session")
+    if context and principal.id != context:
+        raise denied()
+    return principal
 
 
 def same_origin(request: Request):

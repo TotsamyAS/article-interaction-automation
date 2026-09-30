@@ -128,6 +128,12 @@ class QueryResult(Contract):
     tie: bool
 
 
+class PreviewView(Contract):
+    request_id: UUID
+    query: Query
+    result: QueryResult
+
+
 class SessionCreate(Contract):
     participant_code: str = Field(pattern=r"^[A-Za-z0-9_-]{1,40}$")
     kind: Literal["experiment", "practice"] = "experiment"
@@ -151,11 +157,24 @@ class M3AttemptInput(Contract):
         return value
 
 
+class M5AttemptInput(Contract):
+    request_id: UUID
+    text: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("text")
+    @classmethod
+    def non_blank_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Текст цели не может быть пустым.")
+        return value
+
+
 class Event(Contract):
     event_id: UUID
     sequence: int = Field(ge=0)
     offset_ms: int = Field(ge=0)
-    kind: Literal["input", "focus_lost", "focus_gained", "request_started", "request_finished", "navigation"]
+    kind: Literal["input", "focus_lost", "focus_gained", "request_started", "request_finished", "speech_started", "speech_finished", "navigation"]
     target: str = Field(default="", max_length=120)
     action: Literal["click", "keydown", "pointermove", "scroll", "change"] | None = None
     x: float | None = Field(default=None, allow_inf_nan=False)
@@ -206,6 +225,9 @@ class AttemptSummary(Contract):
 
 
 class TrialView(Contract):
+    wording_version: str
+    trial_limit_seconds: int
+    attempt_limit: int
     id: str
     session_id: str
     position: int

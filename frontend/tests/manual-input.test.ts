@@ -78,3 +78,9 @@ test('negation cannot silently invert actions, comparisons or double negation', 
   expect(() => readConditions('Приоритет: НЕ', builders)).toThrow('Введите значение');
   expect(() => readConditions('НЕ Приоритет: Низкий ИЛИ Средний', builders)).toThrow('И НЕ');
 });
+
+test('legacy field aliases select the same draft and canonical new label', () => {
+  const vocabulary: TagBuilder[] = [{ ...builders[0], label: 'Направление работ', aliases: ['Эпик'], values: ['Платежи'] }];
+  expect(readField('Эпик', vocabulary)?.builder.label).toBe('Направление работ');
+  expect(readConditions('НЕ Эпик: Платежи', vocabulary)).toEqual(['Направление работ != Платежи']);
+});

@@ -1,4 +1,5 @@
 import sqlite3
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
@@ -9,8 +10,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from .config import Settings, load_settings
 from .analytics import AnalyticsFilter, AnalyticsService, csv_bundle, excel_workbook, table_csv
-from .contracts import (AttemptInput, AttemptView, EventBatch, M3AttemptInput, Mode,
-                        Query, QueryResult, SessionCreate, SessionView, TaskRecord, TrialView)
+from .contracts import (AttemptInput, AttemptView, EventBatch, M3AttemptInput, M5AttemptInput, Mode,
+                        PreviewView, Query, QueryResult, SessionCreate, SessionView, TaskRecord, TrialView)
 from .database import Database, encode
 from .errors import DomainError
 from .service import ExperimentService, now_ms
@@ -19,9 +20,11 @@ from .access import (AccessService, COOKIE_NAME, Principal, Signatures,
 from .manual_query import ManualTags, builders, compile_tags, suggestions
 from .engine import execute
 from .llm import OpenAICompatibleInterpreter, key_from_runtime as llm_key_from_runtime
+from .agent import RouterAIAgent
+from .terminology import display_text
 
 
-def create_app(settings: Settings | None = None, clock=now_ms, signatures_factory=None, m3_interpreter_factory=None) -> FastAPI:
+def create_app(settings: Settings | None = None, clock=now_ms, signatures_factory=None, m3_interpreter_factory=None, m5_agent_factory=None) -> FastAPI:
     settings = settings or load_settings()
 
     @asynccontextmanager
@@ -30,19 +33,29 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         database = Database(settings)
         database.initialize()
         service = ExperimentService(database, clock)
+        shared_key = None
         if m3_interpreter_factory is None:
+            shared_key = llm_key_from_runtime()
             interpreter = OpenAICompatibleInterpreter(
-                base_url=settings.llm_base_url,
-                api_key=llm_key_from_runtime(),
-                model=settings.llm_model,
-                temperature=settings.llm_temperature,
-                timeout_seconds=settings.llm_timeout_seconds,
-                records=service.records,
-                reference_date=settings.reference_date,
+                base_url=settings.llm_base_url, api_key=shared_key, model=settings.llm_model,
+                temperature=settings.llm_temperature, timeout_seconds=settings.llm_timeout_seconds,
+                records=service.records, reference_date=settings.reference_date,
             )
         else:
             interpreter = m3_interpreter_factory(settings, service.records)
         service.configure_m3(interpreter)
+        if m5_agent_factory is not None:
+            agent = m5_agent_factory(settings, service.records)
+        elif m3_interpreter_factory is None:
+            agent = RouterAIAgent(
+                base_url=settings.llm_base_url, api_key=shared_key, model=settings.llm_model,
+                temperature=settings.llm_temperature, timeout_seconds=settings.llm_timeout_seconds,
+                max_steps=settings.m5_max_llm_steps, records=service.records, reference_date=settings.reference_date,
+            )
+        else:
+            # Existing tests/in-process callers that replace M3 do not implicitly perform external M5 calls.
+            agent = None
+        service.configure_m5(agent)
         app.state.service = service
         app.state.access = AccessService(database, signatures, clock=lambda: clock() / 1000)
         yield
@@ -60,16 +73,20 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
     @app.get("/api/access/enter", include_in_schema=False)
     def enter(invitation: str):
         principal = app.state.access.validate(invitation, "invite")
-        response = RedirectResponse(settings.login_redirect_path, status_code=303)
-        response.set_cookie(COOKIE_NAME, app.state.access.cookie(principal),
-                            max_age=settings.access_cookie_seconds, httponly=True,
-                            secure=settings.public_base_url.startswith("https://"), samesite="lax", path="/")
+        target = urlsplit(settings.login_redirect_path)
+        query = dict(parse_qsl(target.query)) | {"access": principal.id}
+        response = RedirectResponse(urlunsplit(target._replace(query=urlencode(query))), status_code=303)
+        credential = app.state.access.cookie(principal)
+        for name in (COOKIE_NAME, f'{COOKIE_NAME}_{principal.id}'):
+            response.set_cookie(name, credential, max_age=settings.access_cookie_seconds, httponly=True,
+                                secure=settings.public_base_url.startswith("https://"), samesite="lax", path="/")
         return response
 
     @router.post("/access/logout", tags=["Доступ"])
-    def logout():
+    def logout(principal: Annotated[Principal, Depends(require_principal)]):
         response = Response(status_code=204)
         response.delete_cookie(COOKIE_NAME, path="/")
+        response.delete_cookie(f'{COOKIE_NAME}_{principal.id}', path="/")
         return response
 
     @router.get("/me", tags=["Доступ"])
@@ -77,7 +94,7 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         with app.state.service.database.transaction() as connection:
             sessions = [dict(row) for row in connection.execute(
                 "SELECT id, kind FROM sessions WHERE participant_code = ? ORDER BY created_ms, id", (principal.code,))]
-        return {"participant_code": principal.code, "role": principal.role,
+        return {"participant_code": principal.code, "role": principal.role, "access_context": principal.id,
                 "sessions": [app.state.service.session(row["id"]) for row in sessions]}
 
     @app.exception_handler(DomainError)
@@ -113,8 +130,8 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
     @router.get("/manual-query", tags=["Ручной ввод"])
     def manual_query_help():
         return {"placeholder": "Выберите или введите поле, например Статус",
-                "instruction": "Вся сборка запроса — в одной строке. Введите поле и значение, подтверждая Enter или Tab. После готового условия можно ввести «ИЛИ» и добавить значение того же поля, либо «И» и начать другое условие. Группировка, Итог, Экстремум и Экспорт вводятся здесь же. В конце нажмите «Выполнить».",
-                "examples": ["Статус: В работе ИЛИ На ревью", "Приоритет != Низкий", "Группировка: эпик", "Итог: количество", "Экстремум: максимум", "Экспорт: CSV"],
+                "instruction": "Вся сборка запроса — в одной строке. Введите поле и значение, подтверждая Enter или Tab. После готового условия можно ввести «ИЛИ» и добавить значение того же поля, либо «И» и начать другое условие. Группировка, Итог, Экстремум и Экспорт вводятся здесь же. Сначала откройте предпросмотр, проверьте таблицу и выполненный Query, затем отдельно отправьте итоговый ответ.",
+                "examples": ["Статус: В работе ИЛИ На ревью", "Приоритет != Низкий", "Группировка: направление работ", "Итог: количество", "Экстремум: максимум", "Экспорт: CSV"],
                 "suggestions": suggestions(app.state.service.records), "builders": builders(app.state.service.records)}
 
     @router.post("/manual-query/compile", response_model=Query, tags=["Ручной ввод"])
@@ -128,7 +145,7 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
     @router.get("/tasks", tags=["Данные"])
     def tasks(principal: Annotated[Principal, Depends(require_principal)]):
         app.state.access.researcher(principal)
-        return [{"id": task.id, "level": task.level, "tci": task.tci, "prompt": task.prompt, "training": task.training}
+        return [{"id": task.id, "level": task.level, "tci": task.tci, "prompt": display_text(task.prompt), "training": task.training}
                 for task in app.state.service.catalog.values()]
 
     @router.post("/sessions", response_model=SessionView, tags=["Сессии"])
@@ -161,10 +178,35 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         app.state.access.authorize_resource(principal, "trial", trial_id)
         return app.state.service.submit(trial_id, body)
 
+    @router.post("/trials/{trial_id}/m3-preview", response_model=PreviewView, tags=["Пробы"])
+    def m3_preview(trial_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        app.state.access.authorize_resource(principal, "trial", trial_id)
+        return app.state.service.preview_m3(trial_id, body)
+
     @router.post("/trials/{trial_id}/m3-attempts", response_model=AttemptView, tags=["Пробы"])
     def m3_attempt(trial_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
         app.state.access.authorize_resource(principal, "trial", trial_id)
         return app.state.service.submit_m3(trial_id, body)
+
+    @router.post("/trials/{trial_id}/m4-preview", response_model=PreviewView, tags=["Пробы"])
+    def m4_preview(trial_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        app.state.access.authorize_resource(principal, "trial", trial_id)
+        return app.state.service.preview_m4(trial_id, body)
+
+    @router.post("/trials/{trial_id}/m4-attempts", response_model=AttemptView, tags=["Пробы"])
+    def m4_attempt(trial_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        app.state.access.authorize_resource(principal, "trial", trial_id)
+        return app.state.service.submit_m4(trial_id, body)
+
+    @router.post("/trials/{trial_id}/m5-preview", response_model=PreviewView, tags=["Пробы"])
+    def m5_preview(trial_id: str, body: M5AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        app.state.access.authorize_resource(principal, "trial", trial_id)
+        return app.state.service.preview_m5(trial_id, body)
+
+    @router.post("/trials/{trial_id}/m5-attempts", response_model=AttemptView, tags=["Пробы"])
+    def m5_attempt(trial_id: str, body: M5AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        app.state.access.authorize_resource(principal, "trial", trial_id)
+        return app.state.service.submit_m5(trial_id, body)
 
     @router.post("/trials/{trial_id}/events", tags=["События"])
     def events(trial_id: str, body: EventBatch, principal: Annotated[Principal, Depends(require_principal)]):
@@ -203,7 +245,7 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         return AnalyticsService(app.state.service).collect(filters)
 
     @router.get("/analytics/{table}.csv", tags=["Аналитика"])
-    def analytics_csv(table: Literal["trials", "attempts", "events", "interpretations", "summary"], filters: Annotated[AnalyticsFilter, Depends(analytics_filters)]):
+    def analytics_csv(table: Literal["trials", "attempts", "events", "interpretations", "agent_runs", "summary"], filters: Annotated[AnalyticsFilter, Depends(analytics_filters)]):
         snapshot = AnalyticsService(app.state.service).collect(filters)
         return Response(table_csv(snapshot, table), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{table}.csv"'})

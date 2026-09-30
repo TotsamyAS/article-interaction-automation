@@ -67,7 +67,7 @@ class Database:
             mode="json",
             exclude={
                 "host", "port", "database_path", "public_base_url", "login_redirect_path", "access_cookie_seconds",
-                "llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds",
+                "llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds", "m5_max_llm_steps",
             },
         )
         manifest = {"dataset_sha256": dataset_digest(records), "protocol": protocol, "protocol_version": 1,
@@ -81,7 +81,7 @@ class Database:
                 legacy_protocol = existing_manifest.get("protocol")
                 if isinstance(legacy_protocol, dict):
                     legacy_protocol = dict(legacy_protocol)
-                    for key in ("llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds"):
+                    for key in ("llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds", "m5_max_llm_steps"):
                         legacy_protocol.pop(key, None)
                     existing_manifest["protocol"] = legacy_protocol
                 existing_manifest.pop("m3_prompt_sha256", None)

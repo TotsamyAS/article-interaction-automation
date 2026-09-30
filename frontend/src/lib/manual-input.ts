@@ -12,7 +12,7 @@ export function exclusionValue(raw: string): string | null {
 export function readField(raw: string, builders: TagBuilder[], exclude = false): Pick<ManualClause, 'builder' | 'operator'> | null {
   const excluded = exclusionValue(raw);
   const label = (excluded ?? raw).trim().replace(/:$/, '').trim();
-  const builder = builders.find((item) => fold(item.label) === fold(label));
+  const builder = builders.find((item) => [item.label, ...(item.aliases ?? [])].some((name) => fold(name) === fold(label)));
   if (!builder) return null;
   const operator = exclude || excluded !== null ? '!=' : builder.operators[0];
   if (!builder.operators.includes(operator)) throw new Error(`«${builder.label}» нельзя исключить. Выберите поле фильтра.`);

@@ -9,6 +9,10 @@
   import M1Workbench from './lib/components/M1Workbench.svelte';
   import M2Workbench from './lib/components/M2Workbench.svelte';
   import M3Workbench from './lib/components/M3Workbench.svelte';
+  import M4Workbench from './lib/components/M4Workbench.svelte';
+  import M5Workbench from './lib/components/M5Workbench.svelte';
+  import HelpDrawer from './lib/components/HelpDrawer.svelte';
+  import { downloadUrl, initializeAccessContext, setAccessContext } from './lib/access-context';
 
   let authState = $state<'loading' | 'authorized' | 'unauthorized' | 'error'>('loading');
   let me = $state<MeResponse | null>(null);
@@ -25,16 +29,21 @@
   let loggerTrialId = $state('');
   let expiredRefreshId = $state('');
   let eventWarning = $state('');
+  let helpOpen = $state(false);
+  let protocol = $state<SessionView['manifest'] | null>(null);
+  let tabBlocked = $state(false);
+  let isFirefox = $state(false);
 
   const currentSession = $derived(me?.sessions.find((session) => session.kind === selectedKind) ?? null);
   const currentTrial = $derived(currentSession?.trials.find((trial) => trial.status === 'active' || trial.status === 'pending') ?? null);
+  const activeTrialId = $derived(currentTrial?.status === 'active' ? currentTrial.id : null);
   const completedTrials = $derived(currentSession?.trials.filter((trial) => trial.status === 'correct' || trial.status === 'incomplete').length ?? 0);
   const progressPercent = $derived(currentSession?.trials.length ? Math.round(completedTrials / currentSession.trials.length * 100) : 0);
   const remainingSeconds = $derived.by(() => {
     void now;
     return currentTrial?.status === 'active' && logger ? Math.ceil(logger.remainingMilliseconds() / 1000) : null;
   });
-  const attemptsLeft = $derived(currentTrial && currentSession ? Math.max(0, Number(currentSession.manifest.protocol.attempt_limit) - currentTrial.attempts.length) : 0);
+  const attemptsLeft = $derived(currentTrial ? Math.max(0, currentTrial.attempt_limit - currentTrial.attempts.length) : 0);
 
   function setToast(tone: 'success' | 'error', text: string) {
     toast = { tone, text, key: Date.now() };
@@ -44,12 +53,15 @@
     authState = 'loading'; fatalMessage = '';
     try {
       me = await api<MeResponse>('/api/me');
+      setAccessContext(me.access_context);
       authState = 'authorized';
       if (me.role === 'participant') {
-        [records, manualHelp] = await Promise.all([
+        const [loadedRecords, loadedHelp, loadedProtocol] = await Promise.all([
           api<TaskRecord[]>('/api/records'),
-          api<ManualQueryHelp>('/api/manual-query')
+          api<ManualQueryHelp>('/api/manual-query'),
+          api<{ manifest: SessionView['manifest'] }>('/api/protocol')
         ]);
+        records = loadedRecords; manualHelp = loadedHelp; protocol = loadedProtocol.manifest;
         if (!me.sessions.some((session) => session.kind === selectedKind) && me.sessions.some((session) => session.kind === 'practice')) selectedKind = 'practice';
       }
     } catch (error) {
@@ -112,22 +124,46 @@
   }
 
   onMount(() => {
+    initializeAccessContext();
+    isFirefox = /Firefox\//.test(navigator.userAgent);
     void load();
     const timer = window.setInterval(() => now = performance.now(), 1000);
     return () => window.clearInterval(timer);
   });
 
   $effect(() => {
-    const trial = currentTrial;
-    if (!trial || trial.status !== 'active') {
-      logger?.stop(); logger = null; loggerTrialId = '';
-      return;
+    const id = activeTrialId;
+    if (!id) { tabBlocked = false; return; }
+    let cancelled = false;
+    let release: (() => void) | undefined;
+    let ownedLogger: TrialEventLogger | null = null;
+    tabBlocked = false;
+    const run = async () => {
+      const latest = await api<TrialView>(`/api/trials/${id}`);
+      if (cancelled) return;
+      if (latest.status !== 'active') { await refreshSession(latest.session_id); return; }
+      eventWarning = '';
+      ownedLogger = new TrialEventLogger(latest, (message) => eventWarning = message,
+        () => performance.now(), () => { void refreshSession(latest.session_id); });
+      logger = ownedLogger; loggerTrialId = id;
+      ownedLogger.start();
+      await new Promise<void>((resolve) => release = resolve);
+      await ownedLogger.stop();
+    };
+    // Locks are released by the browser on tab close. No credential is stored here.
+    if (navigator.locks) {
+      void navigator.locks.request(`experiment-trial:${id}`, { ifAvailable: true }, async (lock) => {
+        if (!lock) { if (!cancelled) tabBlocked = true; return; }
+        await run();
+      }).catch((error) => { if (!cancelled) eventWarning = errorMessage(error); });
+    } else {
+      tabBlocked = true;
+      eventWarning = 'Для защиты журнала от нескольких вкладок откройте стенд в современном браузере через HTTPS или localhost.';
     }
-    if (loggerTrialId === trial.id) return;
-    logger?.stop();
-    logger = new TrialEventLogger(trial, (message) => eventWarning = message);
-    logger.start();
-    loggerTrialId = trial.id;
+    return () => {
+      cancelled = true; release?.();
+      logger = null; loggerTrialId = '';
+    };
   });
 
   $effect(() => {
@@ -155,14 +191,14 @@
   <main class="shell researcher-shell">
     <header class="topbar"><div><p class="eyebrow">Экспериментальный стенд</p><h1>Выгрузка исследования</h1></div><button class="secondary" onclick={() => logoutOpen = true}>Выйти</button></header>
     <section class="research-card"><h2>Данные для анализа</h2><p>Отдельная аналитическая панель не используется. Скачайте полный Excel или CSV-архив и продолжайте анализ в табличном ПО.</p>
-      <div class="download-actions"><a class="primary button-link" href="/api/analytics/export.xlsx">Скачать Excel</a><a class="secondary button-link" href="/api/analytics/export.zip">Скачать CSV ZIP</a></div>
+      <div class="download-actions"><a class="primary button-link" href={downloadUrl('/api/analytics/export.xlsx')}>Скачать Excel</a><a class="secondary button-link" href={downloadUrl('/api/analytics/export.zip')}>Скачать CSV ZIP</a></div>
       <p class="muted small">Роль: researcher · код: {me.participant_code}</p></section>
   </main>
 {:else if me}
   <main class="shell">
     <header class="topbar">
       <div><p class="eyebrow">Экспериментальный стенд</p><h1>Рабочая сессия</h1></div>
-      <div class="participant-meta"><span class="code-badge">{me.participant_code}</span><button class="secondary" onclick={() => logoutOpen = true}>Выйти</button></div>
+      <div class="participant-meta"><span class="code-badge">{me.participant_code}</span><button class="secondary" data-track="help-open" onclick={() => helpOpen = true}>Как работать</button><button class="secondary" onclick={() => logoutOpen = true}>Выйти</button></div>
     </header>
 
     <nav class="session-tabs" aria-label="Тип сессии">
@@ -170,7 +206,9 @@
       <button class:active={selectedKind === 'practice'} onclick={() => selectedKind = 'practice'}>Тренировка</button>
     </nav>
 
+    {#if isFirefox}<p class="notice warning" role="alert">Для голосового режима M4 Firefox не подходит: Web Speech API распознавания речи здесь недоступен. Перед M4 откройте эту же персональную ссылку в другом современном браузере.</p>{/if}
     {#if eventWarning}<p class="notice warning" role="alert">{eventWarning}</p>{/if}
+    {#if tabBlocked}<p class="notice warning" role="alert">Эта проба уже открыта в другой вкладке либо блокировка вкладок недоступна. Продолжайте в первой вкладке или закройте её и <button class="secondary compact" onclick={() => location.reload()}>Обновите эту</button>.</p>{/if}
 
     {#if !currentSession}
       <section class="start-card"><p class="eyebrow">{selectedKind === 'experiment' ? '15 проб' : 'Тренировочный режим'}</p>
@@ -194,19 +232,28 @@
           {#if currentTrial.status === 'pending'}
             {#if currentTrial.mode_available}
               <div class="prompt-placeholder"><h2>Следующая проба готова</h2><p>Формулировка появится после запуска; с этого момента начнётся отсчёт времени.</p>
-                <button class="primary" data-track="trial-start" disabled={requestBusy} onclick={() => startTrial(currentTrial)}>Начать пробу</button></div>
+                {#if currentTrial.mode === 'M4' && isFirefox}
+                  <p class="notice warning">M4 не запускается в Firefox. Откройте персональную ссылку в другом современном браузере и продолжите с сохранённого места.</p>
+                {/if}
+                <button class="primary" data-track="trial-start" disabled={requestBusy || (currentTrial.mode === 'M4' && isFirefox)} onclick={() => startTrial(currentTrial)}>Начать пробу</button></div>
             {:else}
               <div class="unavailable-card"><h2>Режим {currentTrial.mode} пока не подключён</h2><p>Backend не подменяет M4–M5 другими интерфейсами. Продолжение этой сессии станет доступно после подключения соответствующего режима.</p></div>
             {/if}
           {:else}
             <div class="task-prompt"><p class="eyebrow">Задание {currentTrial.task_id}</p><h2>{currentTrial.prompt}</h2></div>
-            {#if currentTrial.mode === 'M1' && logger}
+            {#key currentTrial.id}
+            {#if currentTrial.mode === 'M1' && logger && loggerTrialId === currentTrial.id}
               <M1Workbench trial={currentTrial} {records} referenceDate={currentSession.manifest.protocol.reference_date} {logger} onAttempt={handleAttempt} onBusy={handleBusy} />
-            {:else if currentTrial.mode === 'M2' && logger && manualHelp}
+            {:else if currentTrial.mode === 'M2' && logger && loggerTrialId === currentTrial.id && manualHelp}
               <M2Workbench trial={currentTrial} help={manualHelp} {logger} onAttempt={handleAttempt} onBusy={handleBusy} />
-            {:else if currentTrial.mode === 'M3' && logger}
+            {:else if currentTrial.mode === 'M3' && logger && loggerTrialId === currentTrial.id}
               <M3Workbench trial={currentTrial} {logger} onAttempt={handleAttempt} onBusy={handleBusy} />
+            {:else if currentTrial.mode === 'M4' && logger && loggerTrialId === currentTrial.id}
+              <M4Workbench trial={currentTrial} {logger} onAttempt={handleAttempt} onBusy={handleBusy} />
+            {:else if currentTrial.mode === 'M5' && logger && loggerTrialId === currentTrial.id}
+              <M5Workbench trial={currentTrial} {logger} onAttempt={handleAttempt} onBusy={handleBusy} />
             {/if}
+            {/key}
           {/if}
         </section>
       {/if}
@@ -215,4 +262,10 @@
 {/if}
 
 {#if toast}<AppToast tone={toast.tone} text={toast.text} resetKey={toast.key} onDismiss={() => toast = null} />{/if}
+{#if helpOpen && protocol}
+  <HelpDrawer attemptLimit={currentTrial?.attempt_limit ?? protocol.protocol.attempt_limit}
+    timeLimitSeconds={currentTrial?.trial_limit_seconds ?? protocol.protocol.trial_limit_seconds}
+    referenceDate={protocol.protocol.reference_date} activeTrial={currentTrial?.status === 'active'}
+    onclose={() => helpOpen = false} />
+{/if}
 {#if logoutOpen}<ConfirmDialog title="Выйти из стенда?" message="Повторно войти можно по той же персональной ссылке приглашения." confirmLabel="Выйти" onconfirm={logout} oncancel={() => logoutOpen = false} />{/if}

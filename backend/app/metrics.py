@@ -1,35 +1,46 @@
 from .contracts import Event
 
 
+def _merge(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted((max(0, a), max(0, b)) for a, b in intervals if b >= a):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def active_time_ms(events: list[Event], end_ms: int, idle_ms: int) -> int:
     events = sorted(events, key=lambda event: event.sequence)
     inputs = [e.offset_ms for e in events if e.kind == "input" and e.offset_ms <= end_ms]
     active = [(a, b) for a, b in zip(inputs, inputs[1:]) if 0 <= b - a <= idle_ms]
-    blocked = []
+    blocked: list[tuple[int, int]] = []
     blur = None
     requests = {}
+    speech = {}
     for event in events:
         t = min(event.offset_ms, end_ms)
         if event.kind == "focus_lost" and blur is None:
             blur = t
         elif event.kind == "focus_gained" and blur is not None:
-            blocked.append((blur, t))
-            blur = None
+            blocked.append((blur, t)); blur = None
         elif event.kind == "request_started":
             requests.setdefault(event.request_id, t)
         elif event.kind == "request_finished" and event.request_id in requests:
             blocked.append((requests.pop(event.request_id), t))
+        elif event.kind == "speech_started":
+            speech.setdefault(event.target, t)
+        elif event.kind == "speech_finished" and event.target in speech:
+            active.append((speech.pop(event.target), t))
     if blur is not None:
         blocked.append((blur, end_ms))
     blocked.extend((start, end_ms) for start in requests.values())
-    merged = []
-    for start, end in sorted(blocked):
-        if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
-        else:
-            merged.append((start, end))
-    return sum(b - a - sum(max(0, min(b, end) - max(a, start)) for start, end in merged)
-               for a, b in active)
+    active.extend((start, end_ms) for start in speech.values())
+    merged_blocked = _merge(blocked)
+    merged_active = _merge(active)
+    return sum(b - a - sum(max(0, min(b, end) - max(a, start)) for start, end in merged_blocked)
+               for a, b in merged_active)
 
 
 def trial_metrics(trial: dict, attempts: list[dict], active_ms: int, limit_ms: int, attempt_limit: int) -> dict:

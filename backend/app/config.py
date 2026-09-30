@@ -28,6 +28,7 @@ class Settings(BaseModel):
     llm_model: str = Field(min_length=1, max_length=160)
     llm_temperature: float = Field(ge=0, le=2)
     llm_timeout_seconds: float = Field(gt=0, le=120)
+    m5_max_llm_steps: int = Field(gt=0, le=50)
 
     @model_validator(mode="after")
     def access_urls(self):

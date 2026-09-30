@@ -1,8 +1,8 @@
-import { api, errorMessage } from './api';
+import { api, ApiError, errorMessage } from './api';
 import type { TrialView } from './types';
 
 type InputAction = 'click' | 'keydown' | 'pointermove' | 'scroll' | 'change';
-type EventKind = 'input' | 'focus_lost' | 'focus_gained' | 'request_started' | 'request_finished' | 'navigation';
+type EventKind = 'input' | 'focus_lost' | 'focus_gained' | 'request_started' | 'request_finished' | 'speech_started' | 'speech_finished' | 'navigation';
 
 interface ClientEvent {
   event_id: string;
@@ -41,9 +41,11 @@ export class TrialEventLogger {
   private submissionPending = false;
   private closed = false;
   private readonly durationLimit: number;
+  private terminalOffset: number | null = null;
 
   constructor(private trial: TrialView, private onWarning: (message: string) => void = () => undefined,
-              private monotonicNow: () => number = () => performance.now()) {
+              private monotonicNow: () => number = () => performance.now(),
+              private onTerminal: () => void = () => undefined) {
     this.sequence = trial.next_event_sequence;
     this.lastOffset = trial.last_event_offset_ms;
     this.anchorOffset = Math.max(this.lastOffset, trial.elapsed_since_start_ms);
@@ -96,7 +98,7 @@ export class TrialEventLogger {
     this.cleanup = [];
     if (this.interval) clearInterval(this.interval);
     this.interval = null;
-    void this.flushSafely();
+    return this.flushSafely();
   }
 
   private offset() {
@@ -108,6 +110,7 @@ export class TrialEventLogger {
   remainingMilliseconds() { return Math.max(0, this.durationLimit - this.offset()); }
 
   private push(kind: EventKind, target: string, details: Partial<ClientEvent> = {}, forcedOffset?: number) {
+    if (this.closed) return;
     const offset = Math.min(this.durationLimit, Math.max(this.lastOffset, forcedOffset ?? this.offset()));
     this.lastOffset = offset;
     this.buffer.push({ event_id: crypto.randomUUID(), sequence: this.sequence++, offset_ms: offset, kind, target, ...details });
@@ -124,6 +127,16 @@ export class TrialEventLogger {
     this.push('navigation', target.slice(0, 120));
   }
 
+  speechStarted(target = 'speech-recognition') {
+    if (this.closed) return;
+    this.push('speech_started', target.slice(0, 120));
+  }
+
+  speechFinished(target = 'speech-recognition') {
+    if (this.closed) return;
+    this.push('speech_finished', target.slice(0, 120));
+  }
+
   beginSubmission(requestId: string, target: string) {
     this.submissionPending = true;
     this.requestStarted(requestId, target);
@@ -134,6 +147,7 @@ export class TrialEventLogger {
       ? Math.max(0, finishedMs - this.trial.started_ms) : this.offset();
     if (terminal) {
       const end = Math.min(this.durationLimit, offset);
+      this.terminalOffset = end;
       // Actions while a terminal response was travelling are outside the trial.
       // Pending batches have not been uploaded while the outcome was unknown.
       this.buffer = this.buffer.filter((event) => event.offset_ms <= end);
@@ -179,16 +193,31 @@ export class TrialEventLogger {
       return;
     }
     if (!this.buffer.length) return;
-    const batch = this.buffer.splice(0, 500);
-    const pending = api(`/api/trials/${this.trial.id}/events`, {
-      method: 'POST',
-      body: JSON.stringify({ events: batch })
-    }).then(() => undefined);
+    let batch = this.buffer.splice(0, 500);
+    const send = () => api(`/api/trials/${this.trial.id}/events`, {
+      method: 'POST', body: JSON.stringify({ events: batch })
+    });
+    const pending = (async () => {
+      try { await send(); }
+      catch (error) {
+        if (!(error instanceof ApiError) || error.code !== 'event_outside_trial') throw error;
+        const latest = await api<TrialView>(`/api/trials/${this.trial.id}`);
+        if (latest.ended_ms === null || latest.started_ms === null) throw error;
+        // The server can finish this trial in another tab or while a preview is in flight.
+        // Never relax server bounds or rewrite the timestamps of valid events.
+        this.terminalOffset = latest.ended_ms - latest.started_ms;
+        this.closed = true;
+        batch = batch.filter((event) => event.offset_ms <= this.terminalOffset!);
+        this.buffer = this.buffer.filter((event) => event.offset_ms <= this.terminalOffset!);
+        this.onTerminal();
+        if (batch.length) await send();
+      }
+    })();
     this.flushPromise = pending;
     try {
       await pending;
     } catch (error) {
-      this.buffer = [...batch, ...this.buffer];
+      this.buffer = [...batch, ...this.buffer].filter((event) => this.terminalOffset === null || event.offset_ms <= this.terminalOffset);
       throw error;
     } finally {
       if (this.flushPromise === pending) this.flushPromise = null;

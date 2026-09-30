@@ -1,0 +1,281 @@
+{
+  "$defs": {
+    "Extremum": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "anyOf": [
+            {
+              "enum": [
+                "max",
+                "min"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metric": {
+          "anyOf": [
+            {
+              "enum": [
+                "count",
+                "sum",
+                "avg",
+                "max",
+                "min"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "required": [
+        "direction",
+        "metric"
+      ]
+    },
+    "Filter": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "enum": [
+            "id",
+            "title",
+            "status",
+            "priority",
+            "assignee",
+            "epic",
+            "sprint",
+            "created_at",
+            "deadline",
+            "labels",
+            "estimate_hours"
+          ],
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            "eq",
+            "neq",
+            "gt",
+            "lt",
+            "gte",
+            "lte",
+            "in",
+            "not_in",
+            "is_null",
+            "not_null"
+          ],
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logic": {
+          "enum": [
+            "AND",
+            "OR"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "operator",
+        "value",
+        "logic"
+      ],
+      "type": "object"
+    },
+    "Grouping": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "status",
+                "priority",
+                "assignee",
+                "epic",
+                "sprint"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aggregation": {
+          "anyOf": [
+            {
+              "enum": [
+                "COUNT",
+                "SUM",
+                "AVG",
+                "MAX",
+                "MIN"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aggregation_field": {
+          "anyOf": [
+            {
+              "const": "estimate_hours",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "required": [
+        "field",
+        "aggregation",
+        "aggregation_field"
+      ]
+    },
+    "Output": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "enum": [
+            "table",
+            "csv",
+            "chart",
+            "summary"
+          ],
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "all_records",
+            "extremum_group",
+            "aggregate_only"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "required": [
+        "format",
+        "scope"
+      ]
+    },
+    "Sorting": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "anyOf": [
+            {
+              "enum": [
+                "id",
+                "title",
+                "status",
+                "priority",
+                "assignee",
+                "epic",
+                "sprint",
+                "created_at",
+                "deadline",
+                "labels",
+                "estimate_hours"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "direction": {
+          "anyOf": [
+            {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "required": [
+        "field",
+        "direction"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "filters": {
+      "items": {
+        "$ref": "#/$defs/Filter"
+      },
+      "maxItems": 40,
+      "type": "array"
+    },
+    "grouping": {
+      "$ref": "#/$defs/Grouping"
+    },
+    "extremum": {
+      "$ref": "#/$defs/Extremum"
+    },
+    "sorting": {
+      "$ref": "#/$defs/Sorting"
+    },
+    "output": {
+      "$ref": "#/$defs/Output"
+    }
+  },
+  "type": "object",
+  "required": [
+    "filters",
+    "grouping",
+    "extremum",
+    "sorting",
+    "output"
+  ]
+}

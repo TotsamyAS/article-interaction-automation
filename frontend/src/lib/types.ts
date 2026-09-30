@@ -44,8 +44,17 @@ export interface QueryResult {
   tie: boolean;
 }
 
+export interface PreviewView {
+  request_id: string;
+  query: Query;
+  result: QueryResult;
+}
+
 export interface AttemptSummary { id: string; ordinal: number; correct: boolean; started_ms: number; finished_ms: number }
 export interface TrialView {
+  wording_version: string;
+  trial_limit_seconds: number;
+  attempt_limit: number;
   id: string;
   session_id: string;
   position: number;
@@ -84,8 +93,9 @@ export interface SessionView {
   trials: TrialView[];
 }
 
-export interface MeResponse { participant_code: string; role: Role; sessions: SessionView[] }
+export interface MeResponse { participant_code: string; role: Role; access_context: string; sessions: SessionView[] }
 export interface TagBuilder {
+  aliases?: string[];
   label: string; kind: 'filter' | 'action'; operators: string[]; values: string[];
   placeholder: string; alternatives: boolean; exclusive_values: string[];
 }
