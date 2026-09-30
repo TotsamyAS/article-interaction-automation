@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import logging
 import time
 from decimal import Decimal
 from uuid import uuid4
@@ -15,6 +16,9 @@ from .metrics import active_time_ms, trial_metrics
 from .llm import LLMError, PROMPT_VERSION
 from .agent import AgentError, AGENT_PROMPT_VERSION
 from .terminology import WORDING_VERSION, display_text
+
+
+LOGGER = logging.getLogger("uvicorn.error")
 
 
 def now_ms() -> int:
@@ -40,6 +44,30 @@ class ExperimentService:
         with database.transaction() as connection:
             self.manifest["protocol_changes"] = [dict(row) for row in connection.execute(
                 "SELECT * FROM protocol_changes ORDER BY id")]
+
+    @staticmethod
+    def _log_payload(prefix: str, stage: str, **fields) -> None:
+        LOGGER.info("%s %s", prefix, json.dumps({"stage": stage, **fields}, ensure_ascii=False,
+                                                 sort_keys=True, default=str))
+
+    def _log_llm(self, stage: str, **fields) -> None:
+        if self.settings.logging.llmRoutesLogging:
+            self._log_payload("[llm-routes]", stage, **fields)
+
+    def _log_task_mining(self, stage: str, **fields) -> None:
+        if self.settings.logging.taskMiningLogging:
+            self._log_payload("[task-mining]", stage, **fields)
+
+    @staticmethod
+    def _event_log_view(event: Event) -> dict:
+        return {
+            "event_id": str(event.event_id),
+            "sequence": event.sequence,
+            "offset_ms": event.offset_ms,
+            "kind": event.kind,
+            "target": event.target,
+            "request_id": str(event.request_id) if event.request_id is not None else None,
+        }
 
     def configure_m3(self, interpreter) -> None:
         self.m3_interpreter = interpreter
@@ -235,6 +263,9 @@ class ExperimentService:
 
     def _llm_request(self, trial_id: str, request: M3AttemptInput, mode: Mode, *, finalize: bool):
         request_id = str(request.request_id)
+        route = f"/api/trials/{trial_id}/{mode.value.lower()}-{'attempts' if finalize else 'preview'}"
+        self._log_llm("request", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                      finalize=finalize, text=request.text)
         with self.database.transaction() as connection:
             trial = self._trial(connection, trial_id)
             previous = connection.execute(
@@ -242,12 +273,21 @@ class ExperimentService:
             ).fetchone()
             if previous:
                 previous = dict(previous)
+                self._log_llm("cache_hit", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                              status=previous["status"], stored_text=previous["user_text"])
                 if previous["user_text"] != request.text:
+                    self._log_llm("rejected", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                                  code="idempotency_conflict", stored_text=previous["user_text"], text=request.text)
                     raise DomainError("idempotency_conflict", "request_id уже использован с другим текстом.", 409)
                 if previous["status"] == "pending":
+                    self._log_llm("rejected", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                                  code="request_in_progress")
                     raise DomainError("request_in_progress", "Этот запрос к LLM ещё выполняется.", 409)
                 if previous["status"] != "ok":
                     status = 503 if previous["error_code"] == "llm_unavailable" else 502
+                    self._log_llm("cached_error", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                                  code=previous["error_code"], message=previous["error_message"],
+                                  raw_response=previous["raw_response"], query_json=previous["query_json"])
                     raise DomainError(previous["error_code"] or "llm_failed", previous["error_message"] or "LLM не смог интерпретировать запрос.", status)
                 query = Query.model_validate_json(previous["query_json"])
             else:
@@ -281,15 +321,28 @@ class ExperimentService:
                 )
                 query = None
         if query is not None:
+            self._log_llm("cached_query", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                          query=query.model_dump(mode="json"))
             if finalize:
-                return self.submit(trial_id, AttemptInput(request_id=request.request_id, query=query))
-            return self._preview_payload(request.request_id, query)
+                response = self.submit(trial_id, AttemptInput(request_id=request.request_id, query=query))
+                self._log_llm("completed", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                              finalize=True, correct=response["correct"], trial_status=response["trial_status"])
+                return response
+            response = self._preview_payload(request.request_id, query)
+            self._log_llm("completed", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                          finalize=False, query=response["query"], result=response["result"])
+            return response
 
+        self._log_llm("provider_call_started", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                      model=self.m3_interpreter.model)
         try:
             interpretation = self.m3_interpreter.interpret(request.text)
         except LLMError as error:
             finished = self.clock()
             state = "invalid_response" if error.code == "llm_invalid_response" else "provider_error"
+            self._log_llm("provider_error", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                          code=error.code, message=error.message, status=error.status, llm_ms=error.llm_ms,
+                          response_model=error.response_model, provider=error.provider, raw_response=error.raw_response)
             with self.database.transaction() as connection:
                 connection.execute(
                     "UPDATE m3_interpretations SET status = ?, response_model = ?, provider = ?, system_fingerprint = ?, "
@@ -301,11 +354,18 @@ class ExperimentService:
             raise DomainError(error.code, error.message, error.status) from None
 
         query_json = encode(interpretation.query.model_dump(mode="json"))
+        self._log_llm("provider_response", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                      response_model=interpretation.response_model, provider=interpretation.provider,
+                      llm_ms=interpretation.llm_ms, raw_response=interpretation.raw_response,
+                      query=interpretation.query.model_dump(mode="json"))
         try:
             execute([], interpretation.query)
-        except DomainError:
+        except DomainError as validation_error:
             finished = self.clock()
             message = "LLM сформировал несовместимый Query. Переформулируйте запрос."
+            self._log_llm("invalid_query", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                          query=interpretation.query.model_dump(mode="json"), validation_code=validation_error.code,
+                          validation_message=validation_error.message, raw_response=interpretation.raw_response)
             with self.database.transaction() as connection:
                 connection.execute(
                     "UPDATE m3_interpretations SET status = 'invalid_query', response_model = ?, provider = ?, system_fingerprint = ?, "
@@ -328,8 +388,14 @@ class ExperimentService:
                  interpretation.output_tokens, finished, trial_id, request_id),
             )
         if finalize:
-            return self.submit(trial_id, AttemptInput(request_id=request.request_id, query=interpretation.query))
-        return self._preview_payload(request.request_id, interpretation.query)
+            response = self.submit(trial_id, AttemptInput(request_id=request.request_id, query=interpretation.query))
+            self._log_llm("completed", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                          finalize=True, correct=response["correct"], trial_status=response["trial_status"])
+            return response
+        response = self._preview_payload(request.request_id, interpretation.query)
+        self._log_llm("completed", route=route, trial_id=trial_id, request_id=request_id, mode=mode.value,
+                      finalize=False, query=response["query"], result=response["result"])
+        return response
 
     def preview_m5(self, trial_id: str, request: M5AttemptInput):
         return self._m5_request(trial_id, request, finalize=False)
@@ -339,6 +405,9 @@ class ExperimentService:
 
     def _m5_request(self, trial_id: str, request: M5AttemptInput, *, finalize: bool):
         request_id = str(request.request_id)
+        route = f"/api/trials/{trial_id}/m5-{'attempts' if finalize else 'preview'}"
+        self._log_llm("request", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                      finalize=finalize, text=request.text)
         with self.database.transaction() as connection:
             trial = self._trial(connection, trial_id)
             previous = connection.execute(
@@ -346,12 +415,20 @@ class ExperimentService:
             ).fetchone()
             if previous:
                 previous = dict(previous)
+                self._log_llm("cache_hit", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                              status=previous["status"], stored_text=previous["user_text"])
                 if previous["user_text"] != request.text:
+                    self._log_llm("rejected", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                                  code="idempotency_conflict", stored_text=previous["user_text"], text=request.text)
                     raise DomainError("idempotency_conflict", "request_id уже использован с другой целью.", 409)
                 if previous["status"] == "pending":
+                    self._log_llm("rejected", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                                  code="request_in_progress")
                     raise DomainError("request_in_progress", "Этот агентный запуск ещё выполняется.", 409)
                 if previous["status"] != "ok":
                     status = 503 if previous["error_code"] == "agent_unavailable" else 502
+                    self._log_llm("cached_error", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                                  code=previous["error_code"], message=previous["error_message"])
                     raise DomainError(previous["error_code"] or "agent_failed", previous["error_message"] or "Агент не смог выполнить запрос.", status)
                 query = Query.model_validate_json(previous["query_json"])
             else:
@@ -378,14 +455,26 @@ class ExperimentService:
                 )
                 query = None
         if query is not None:
+            self._log_llm("cached_query", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                          query=query.model_dump(mode="json"))
             if finalize:
-                return self.submit(trial_id, AttemptInput(request_id=request.request_id, query=query))
-            return self._preview_payload(request.request_id, query)
+                response = self.submit(trial_id, AttemptInput(request_id=request.request_id, query=query))
+                self._log_llm("completed", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                              finalize=True, correct=response["correct"], trial_status=response["trial_status"])
+                return response
+            response = self._preview_payload(request.request_id, query)
+            self._log_llm("completed", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                          finalize=False, query=response["query"], result=response["result"])
+            return response
 
+        self._log_llm("agent_call_started", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                      model=self.m5_agent.model, max_steps=self.m5_agent.max_steps)
         try:
             execution = self.m5_agent.run(request.text)
         except AgentError as error:
             finished = self.clock(); d = error.diagnostics
+            self._log_llm("agent_error", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                          code=error.code, message=error.message, status=error.status, diagnostics=d)
             with self.database.transaction() as connection:
                 connection.execute(
                     "UPDATE m5_agent_runs SET status = ?, error_code = ?, error_message = ?, llm_ms = ?, finished_ms = ? "
@@ -396,12 +485,19 @@ class ExperimentService:
             raise DomainError(error.code, error.message, error.status) from None
         except Exception as error:
             finished = self.clock(); message = f"Agent loop завершился ошибкой: {type(error).__name__}."
+            self._log_llm("agent_exception", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                          exception_type=type(error).__name__, exception_message=str(error))
             with self.database.transaction() as connection:
                 connection.execute("UPDATE m5_agent_runs SET status='agent_error', error_code='agent_exception', error_message=?, finished_ms=? WHERE trial_id=? AND request_id=?",
                                    (message, finished, trial_id, request_id))
             raise DomainError("agent_exception", message, 502) from None
 
         query_json = encode(execution.query.model_dump(mode="json")); trajectory_json = encode(execution.trajectory); finished = self.clock()
+        self._log_llm("agent_response", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                      response_model=execution.response_model, provider=execution.provider, query=execution.query.model_dump(mode="json"),
+                      trajectory=execution.trajectory, termination=execution.termination, llm_ms=execution.llm_ms,
+                      tool_ms=execution.tool_ms, total_ms=execution.total_ms, llm_calls=execution.llm_calls,
+                      tool_calls=execution.tool_calls, input_tokens=execution.input_tokens, output_tokens=execution.output_tokens)
         with self.database.transaction() as connection:
             connection.execute(
                 "UPDATE m5_agent_runs SET status='ok', response_model=?, provider=?, query_json=?, trajectory_json=?, final_text=?, termination=?, "
@@ -412,38 +508,77 @@ class ExperimentService:
                  execution.output_tokens, finished, trial_id, request_id),
             )
         if finalize:
-            return self.submit(trial_id, AttemptInput(request_id=request.request_id, query=execution.query))
-        return self._preview_payload(request.request_id, execution.query)
+            response = self.submit(trial_id, AttemptInput(request_id=request.request_id, query=execution.query))
+            self._log_llm("completed", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                          finalize=True, correct=response["correct"], trial_status=response["trial_status"])
+            return response
+        response = self._preview_payload(request.request_id, execution.query)
+        self._log_llm("completed", route=route, trial_id=trial_id, request_id=request_id, mode=Mode.M5.value,
+                      finalize=False, query=response["query"], result=response["result"])
+        return response
 
     def ingest_events(self, trial_id, events: list[Event]):
+        event_views = [self._event_log_view(event) for event in events]
+        self._log_task_mining("batch_received", trial_id=trial_id, count=len(events), events=event_views)
         with self.database.transaction() as connection:
             trial = self._trial(connection, trial_id)
             self._expire(connection, trial, self.clock())
+            self._log_task_mining("trial_state", trial_id=trial_id, status=trial["status"],
+                                  started_ms=trial["started_ms"], ended_ms=trial["ended_ms"])
             if trial["started_ms"] is None:
+                self._log_task_mining("rejected", trial_id=trial_id, code="trial_not_started", events=event_views)
                 raise DomainError("trial_not_started", "Сначала начните пробу.", 409)
             end = trial["ended_ms"] if trial["ended_ms"] is not None else self.clock()
             max_offset = max(0, end - trial["started_ms"])
-            previous = connection.execute("SELECT sequence, offset_ms FROM events WHERE trial_id = ? ORDER BY sequence DESC LIMIT 1", (trial_id,)).fetchone()
+            previous = connection.execute(
+                "SELECT sequence, offset_ms FROM events WHERE trial_id = ? ORDER BY sequence DESC LIMIT 1",
+                (trial_id,),
+            ).fetchone()
             last_seq, last_offset = (previous["sequence"], previous["offset_ms"]) if previous else (-1, -1)
+            self._log_task_mining("cursor", trial_id=trial_id, server_last_sequence=last_seq,
+                                  server_last_offset_ms=last_offset, max_offset_ms=max_offset,
+                                  incoming_first_sequence=events[0].sequence if events else None,
+                                  incoming_last_sequence=events[-1].sequence if events else None)
             accepted = 0
+            duplicates = 0
             for event in events:
+                view = self._event_log_view(event)
                 payload = event.model_dump_json()
-                duplicate = connection.execute("SELECT payload FROM events WHERE trial_id = ? AND event_id = ?", (trial_id, str(event.event_id))).fetchone()
+                duplicate = connection.execute(
+                    "SELECT payload FROM events WHERE trial_id = ? AND event_id = ?",
+                    (trial_id, str(event.event_id)),
+                ).fetchone()
                 if duplicate:
                     if duplicate["payload"] != payload:
+                        self._log_task_mining("rejected", trial_id=trial_id, code="event_conflict", event=view,
+                                              server_last_sequence=last_seq, server_last_offset_ms=last_offset)
                         raise DomainError("event_conflict", "Не удалось сохранить журнал действий: повторно отправленное действие изменилось. Сообщите исследователю.", 409)
+                    duplicates += 1
+                    self._log_task_mining("duplicate", trial_id=trial_id, event=view,
+                                          server_last_sequence=last_seq, server_last_offset_ms=last_offset)
                     continue
                 if event.sequence <= last_seq:
+                    self._log_task_mining("rejected", trial_id=trial_id, code="event_sequence", event=view,
+                                          server_last_sequence=last_seq, server_last_offset_ms=last_offset)
                     raise DomainError("event_sequence", "Не удалось сохранить журнал действий: эта проба уже обновлена, возможно, в другой вкладке. Оставьте одну вкладку стенда и обновите страницу.", 409)
                 if event.offset_ms < last_offset:
+                    self._log_task_mining("rejected", trial_id=trial_id, code="event_time_order", event=view,
+                                          server_last_sequence=last_seq, server_last_offset_ms=last_offset)
                     raise DomainError("event_time_order", "Не удалось сохранить журнал действий: время действий записано в неправильном порядке. Сообщите исследователю и обновите страницу.", 409)
                 if event.offset_ms > max_offset:
+                    self._log_task_mining("rejected", trial_id=trial_id, code="event_outside_trial", event=view,
+                                          server_last_sequence=last_seq, server_last_offset_ms=last_offset,
+                                          max_offset_ms=max_offset)
                     raise DomainError("event_outside_trial", "Не удалось сохранить журнал действий: действие записано за пределами времени этой пробы. Сообщите исследователю и обновите страницу.", 409)
                 connection.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)",
                                    (trial_id, str(event.event_id), event.sequence, event.offset_ms, payload, self.clock()))
                 last_seq, last_offset = event.sequence, event.offset_ms
                 accepted += 1
-            return {"accepted": accepted, "duplicates": len(events) - accepted}
+                self._log_task_mining("event_accepted", trial_id=trial_id, event=view,
+                                      server_last_sequence=last_seq, server_last_offset_ms=last_offset)
+            self._log_task_mining("batch_committed", trial_id=trial_id, accepted=accepted, duplicates=duplicates,
+                                  server_last_sequence=last_seq, server_last_offset_ms=last_offset)
+            return {"accepted": accepted, "duplicates": duplicates}
 
     def export_attempt(self, attempt_id):
         with self.database.transaction() as connection:

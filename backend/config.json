@@ -17,5 +17,9 @@
   "llm_model": "google/gemma-4-26b-a4b-it",
   "llm_temperature": 0.0,
   "llm_timeout_seconds": 60,
-  "m5_max_llm_steps": 12
+  "m5_max_llm_steps": 12,
+  "logging": {
+    "llmRoutesLogging": true,
+    "taskMiningLogging": true
+  }
 }

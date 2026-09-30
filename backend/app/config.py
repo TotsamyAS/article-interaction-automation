@@ -7,6 +7,13 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class LoggingSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    llmRoutesLogging: bool = False
+    taskMiningLogging: bool = False
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -29,6 +36,7 @@ class Settings(BaseModel):
     llm_temperature: float = Field(ge=0, le=2)
     llm_timeout_seconds: float = Field(gt=0, le=120)
     m5_max_llm_steps: int = Field(gt=0, le=50)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings, exclude=True)
 
     @model_validator(mode="after")
     def access_urls(self):
