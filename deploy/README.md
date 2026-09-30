@@ -2,6 +2,8 @@
 
 The production stand does not require a domain. Subjects open `https://PUBLIC_IP/` directly. Caddy terminates TLS on ports 80/443 and requests a short-lived, publicly trusted IP-address certificate from Let's Encrypt using the ACME `shortlived` profile. The frontend continues to proxy `/api` to the internal backend.
 
+Because TLS clients normally omit SNI for a literal IP address, the Caddy global `default_sni` is set from `APP_PUBLIC_IP`; without it Caddy can obtain the IP certificate successfully but still fail the client handshake with `tlsv1 alert internal error`.
+
 `deploy/remote-deploy.sh` materializes `https://APP_PUBLIC_IP` into that release's `backend/config.json`; the committed development config remains `http://localhost:3033`.
 
 ## Deployment model

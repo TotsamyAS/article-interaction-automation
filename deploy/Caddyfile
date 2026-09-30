@@ -1,3 +1,9 @@
+{
+    # Browsers/curl do not send an SNI hostname for a literal IP address.
+    # Use the managed IP certificate as the default for non-SNI TLS clients.
+    default_sni {$APP_PUBLIC_IP}
+}
+
 https://{$APP_PUBLIC_IP} {
     tls {
         issuer acme {
