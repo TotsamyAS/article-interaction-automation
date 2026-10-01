@@ -2,9 +2,9 @@
 
 ## M4/M5 и Task Mining — 29.09.2026
 
-- `M4Workbench.svelte`: Web Speech API в браузере, `ru-RU`, один финальный вариант. Transcript read-only, разрешена новая запись. Firefox/отсутствующий SpeechRecognition показывают явное предупреждение; M4 в Firefox не стартует.
+- `M4Workbench.svelte`: запись через `MediaRecorder`, максимум 20 секунд; raw audio уходит по HTTPS в `/m4-transcribe`, где self-hosted `GigaAM-v3/e2e_rnnt` возвращает transcript. Transcript read-only, разрешена новая запись. Web Speech API и Firefox-блокировка удалены; актуальные Chrome/Edge/Firefox работают при наличии MediaRecorder и разрешения микрофона.
 - `M5Workbench.svelte`: одна текстовая цель; agent planning выполняется backend. UI получает проверенный результат через тот же формат попытки, что остальные режимы.
-- `TrialEventLogger` расширен `speech_started`/`speech_finished`. M4 пишет эти события вокруг распознавания и обычные `request_started/request_finished` вокруг backend-запроса. M5 пишет обычную пару request-событий. Поэтому ни новый speech path, ни agent path не обходят Task Mining.
+- `TrialEventLogger` расширен `speech_started`/`speech_finished`. M4 пишет speech-события только вокруг фактической записи, а `/m4-transcribe` и RouterAI preview имеют отдельные `request_started/request_finished`; ASR latency поэтому относится к системному ожиданию, а не к активной речи. M5 пишет обычную пару request-событий. Ни speech path, ни agent path не обходят Task Mining.
 - Внутренняя M5 trajectory не журналируется как browser events: она приходит из backend `m5_agent_runs` и нужна для анализа поведения агента отдельно от действий участника.
 
 ## Указания пользователя

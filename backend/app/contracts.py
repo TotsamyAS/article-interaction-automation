@@ -134,6 +134,15 @@ class PreviewView(Contract):
     result: QueryResult
 
 
+class M4TranscriptionView(Contract):
+    request_id: UUID
+    text: str
+    model: str
+    detected_language: str | None
+    language_probability: float | None
+    asr_ms: float
+
+
 class SessionCreate(Contract):
     participant_code: str = Field(pattern=r"^[A-Za-z0-9_-]{1,40}$")
     kind: Literal["experiment", "practice"] = "experiment"

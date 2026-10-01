@@ -53,13 +53,13 @@ def test_analytics_exports_preserve_actual_and_penalty_and_exclude_training(clie
     archive_response = client.get("/api/analytics/export.zip?completed_only=true")
     assert archive_response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(archive_response.content)) as archive:
-        assert set(archive.namelist()) == {"trials.csv", "attempts.csv", "events.csv", "interpretations.csv", "agent_runs.csv", "summary.csv", "protocol.json"}
+        assert set(archive.namelist()) == {"trials.csv", "attempts.csv", "events.csv", "interpretations.csv", "m4_transcriptions.csv", "agent_runs.csv", "summary.csv", "protocol.json"}
         assert json.loads(archive.read("protocol.json"))["manifest"]["dataset_sha256"]
 
     workbook_response = client.get("/api/analytics/export.xlsx?completed_only=true")
     assert workbook_response.status_code == 200
     workbook = load_workbook(io.BytesIO(workbook_response.content), read_only=True)
-    assert set(workbook.sheetnames) == {"protocol", "trials", "attempts", "events", "interpretations", "agent_runs", "summary"}
+    assert set(workbook.sheetnames) == {"protocol", "trials", "attempts", "events", "interpretations", "m4_transcriptions", "agent_runs", "summary"}
     values = list(workbook["trials"].values)
     excel_row = dict(zip(values[0], values[1]))
     assert excel_row["Nretry_actual"] == 0

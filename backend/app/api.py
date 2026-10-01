@@ -1,16 +1,19 @@
+import logging
 import sqlite3
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi import Query as QueryParameter
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from .config import Settings, load_settings
 from .analytics import AnalyticsFilter, AnalyticsService, csv_bundle, excel_workbook, table_csv
-from .contracts import (AttemptInput, AttemptView, EventBatch, M3AttemptInput, M5AttemptInput, Mode,
+from .contracts import (AttemptInput, AttemptView, EventBatch, M3AttemptInput, M4TranscriptionView, M5AttemptInput, Mode,
                         PreviewView, Query, QueryResult, SessionCreate, SessionView, TaskRecord, TrialView)
 from .database import Database, encode
 from .errors import DomainError
@@ -22,9 +25,13 @@ from .engine import execute
 from .llm import OpenAICompatibleInterpreter, key_from_runtime as llm_key_from_runtime
 from .agent import RouterAIAgent
 from .terminology import display_text
+from .asr import ASRError, GigaAMASR
 
 
-def create_app(settings: Settings | None = None, clock=now_ms, signatures_factory=None, m3_interpreter_factory=None, m5_agent_factory=None) -> FastAPI:
+LOGGER = logging.getLogger("uvicorn.error")
+
+
+def create_app(settings: Settings | None = None, clock=now_ms, signatures_factory=None, m3_interpreter_factory=None, m5_agent_factory=None, asr_factory=None) -> FastAPI:
     settings = settings or load_settings()
 
     @asynccontextmanager
@@ -56,7 +63,9 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
             # Existing tests/in-process callers that replace M3 do not implicitly perform external M5 calls.
             agent = None
         service.configure_m5(agent)
+        asr = asr_factory(settings) if asr_factory is not None else GigaAMASR(settings)
         app.state.service = service
+        app.state.asr = asr
         app.state.access = AccessService(database, signatures, clock=lambda: clock() / 1000)
         yield
 
@@ -116,6 +125,16 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         with app.state.service.database.transaction() as connection:
             connection.execute("SELECT 1").fetchone()
         return {"status": "ok"}
+
+    @app.get("/internal/asr-ready", include_in_schema=False)
+    def asr_ready():
+        try:
+            app.state.asr.ensure_loaded()
+        except Exception as exc:
+            if settings.logging.asrLogging:
+                LOGGER.exception("[m4-asr] warmup failed")
+            raise DomainError("asr_unavailable", f"Не удалось загрузить локальную ASR-модель: {exc}", 503) from exc
+        return {"status": "ok", "protocol": app.state.asr.protocol}
 
     @router.get("/protocol", tags=["Протокол"])
     def protocol():
@@ -187,6 +206,62 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
     def m3_attempt(trial_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
         app.state.access.authorize_resource(principal, "trial", trial_id)
         return app.state.service.submit_m3(trial_id, body)
+
+    @router.post("/trials/{trial_id}/m4-transcribe", response_model=M4TranscriptionView, tags=["Пробы"])
+    async def m4_transcribe(
+        trial_id: str, request: Request, principal: Annotated[Principal, Depends(require_principal)],
+        request_id: UUID = QueryParameter(...), duration_ms: int = QueryParameter(..., gt=0),
+    ):
+        app.state.access.authorize_resource(principal, "trial", trial_id)
+        service = app.state.service
+        cached = service.cached_m4_transcription(trial_id, str(request_id))
+        if cached is not None:
+            return cached
+        if duration_ms > settings.asr_max_audio_seconds * 1000:
+            raise DomainError("asr_audio_too_long", f"Запись должна быть не длиннее {settings.asr_max_audio_seconds} секунд.", 413)
+        mime_type = request.headers.get("content-type", "").strip()
+        base_type = mime_type.split(";", 1)[0].lower()
+        if base_type not in {"audio/webm", "audio/ogg", "audio/mp4", "audio/x-m4a", "audio/wav", "audio/wave", "audio/x-wav"}:
+            raise DomainError("asr_audio_type", "Браузер прислал неподдерживаемый формат аудио.", 415)
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > settings.asr_max_audio_bytes:
+            raise DomainError("asr_audio_too_large", "Аудиозапись слишком большая.", 413)
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > settings.asr_max_audio_bytes:
+                raise DomainError("asr_audio_too_large", "Аудиозапись слишком большая.", 413)
+            chunks.append(chunk)
+        audio = b"".join(chunks)
+        if not audio:
+            raise DomainError("asr_audio_empty", "Браузер не записал звук. Повторите запись.", 422)
+        started_ms = service.clock()
+        if settings.logging.asrLogging:
+            LOGGER.info("[m4-asr] start trial_id=%s request_id=%s bytes=%s duration_ms=%s mime=%s model=%s",
+                        trial_id, request_id, len(audio), duration_ms, mime_type, settings.asr_model)
+        try:
+            result = await run_in_threadpool(app.state.asr.transcribe, audio, mime_type)
+        except ASRError as exc:
+            if settings.logging.asrLogging:
+                LOGGER.exception("[m4-asr] transcription failed trial_id=%s request_id=%s", trial_id, request_id)
+            raise DomainError("asr_failed", str(exc), 502) from exc
+        finished_ms = service.clock()
+        if not result.text.strip():
+            if settings.logging.asrLogging:
+                LOGGER.info("[m4-asr] no speech trial_id=%s request_id=%s asr_ms=%.1f", trial_id, request_id, result.asr_ms)
+            raise DomainError("asr_no_speech", "Речь не распознана. Повторите запись ближе к микрофону.", 422)
+        response = service.save_m4_transcription(
+            trial_id=trial_id, request_id=str(request_id), mime_type=mime_type, audio_bytes=len(audio),
+            audio_duration_ms=duration_ms, model=settings.asr_model, compute_type=settings.asr_compute_type,
+            requested_language=settings.asr_language, detected_language=result.detected_language,
+            language_probability=result.language_probability, transcript=result.text.strip(), asr_ms=result.asr_ms,
+            started_ms=started_ms, finished_ms=finished_ms,
+        )
+        if settings.logging.asrLogging:
+            LOGGER.info("[m4-asr] success trial_id=%s request_id=%s asr_ms=%.1f chars=%s transcript=%r",
+                        trial_id, request_id, result.asr_ms, len(result.text.strip()), result.text.strip())
+        return response
 
     @router.post("/trials/{trial_id}/m4-preview", response_model=PreviewView, tags=["Пробы"])
     def m4_preview(trial_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):

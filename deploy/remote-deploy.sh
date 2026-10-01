@@ -55,9 +55,42 @@ PYCONFIG
 
 compose=(docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml)
 "${compose[@]}" config >/dev/null
+
+# This release moves ASR weights from the old persistent faster-whisper volume into
+# the backend image. Free that ~1.6 GB volume before the first GigaAM build so
+# the 10 GB host never needs to hold both model copies at once.
+old_asr_volume="${PROJECT_NAME}_asr-model-cache"
+if docker volume inspect "$old_asr_volume" >/dev/null 2>&1; then
+  mapfile -t attached < <(docker ps -aq --filter "volume=$old_asr_volume")
+  if ((${#attached[@]})); then
+    docker rm -f "${attached[@]}" >/dev/null
+  fi
+  docker volume rm "$old_asr_volume" >/dev/null || true
+fi
+
+# Build cache is expendable; prune it before downloading the baked GigaAM model.
+docker builder prune -af >/dev/null || true
+docker image prune -af >/dev/null || true
 "${compose[@]}" build --pull backend frontend
 "${compose[@]}" up -d --remove-orphans
 "${compose[@]}" ps
+
+# Warm the model inside the long-lived backend process before admitting subjects.
+# /opt/asr-model is already inside the image, and runtime has HF_HUB_OFFLINE=1.
+asr_ready=0
+for _ in $(seq 1 30); do
+  if "${compose[@]}" exec -T backend python -c \
+      "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/internal/asr-ready', timeout=180).read()"; then
+    asr_ready=1
+    break
+  fi
+  sleep 2
+done
+if [[ $asr_ready -ne 1 ]]; then
+  echo "Backend started, but GigaAM-v3 did not become ready." >&2
+  "${compose[@]}" logs --tail=160 backend >&2 || true
+  exit 1
+fi
 
 healthy=0
 for _ in $(seq 1 60); do
@@ -85,4 +118,5 @@ if ((${#stale[@]})); then
 fi
 
 docker image prune -f >/dev/null
+docker builder prune -af >/dev/null || true
 printf 'Deployed %s to https://%s\n' "$RELEASE_SHA" "$APP_PUBLIC_IP"

@@ -66,7 +66,7 @@ def main():
             rows = list(csv.DictReader(io.StringIO(request("/api/analytics/trials.csv?completed_only=true").decode("utf-8-sig"))))
             assert len(rows) == 1 and rows[0]["status"] == "correct"
             workbook = load_workbook(io.BytesIO(request("/api/analytics/export.xlsx")), read_only=True)
-            assert set(workbook.sheetnames) == {"protocol", "trials", "attempts", "events", "interpretations", "agent_runs", "summary"}
+            assert set(workbook.sheetnames) == {"protocol", "trials", "attempts", "events", "interpretations", "m4_transcriptions", "agent_runs", "summary"}
             workbook.close()
             with zipfile.ZipFile(io.BytesIO(request("/api/analytics/export.zip"))) as archive:
                 assert "protocol.json" in archive.namelist()

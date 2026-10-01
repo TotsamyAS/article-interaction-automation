@@ -1,8 +1,15 @@
+# Актуализация M4 ASR — 30.09.2026
+
+- **Причина изменения:** browser Web Speech API оказался недоступен из России без VPN, а VPN ухудшал доступ к самому стенду. Чтобы не вводить VPN как неконтролируемый фактор эксперимента, Web Speech API исключён из M4.
+- **Новый M4:** `MediaRecorder` → HTTPS upload → self-hosted `GigaAM-v3/e2e_rnnt` → transcript → тот же M3 RouterAI compiler → тот же executor. Русская end-to-end RNN-T модель работает на CPU `float32`, выдаёт нормализованный текст с пунктуацией и ограничена короткими репликами до 20 секунд. Transcript read-only, при ошибке запись повторяется; аудио после распознавания не сохраняется.
+- **Развёртывание:** `ai-sage/GigaAM-v3` revision `e2e_rnnt` (~449 MB) скачивается на этапе `docker build` прямо в `/opt/asr-model`. Runtime работает с `HF_HUB_OFFLINE=1`; если веса недоступны, падает сборка образа, а не экспериментальная попытка.
+- **Task Mining:** `speech_started/speech_finished` охватывают только фактическую запись речи; ожидание `/m4-transcribe` имеет отдельную пару `request_started/request_finished` и вычитается как системное ожидание. В экспорт добавлена таблица `m4_transcriptions` с transcript, длительностью/размером записи, моделью и `Tasr_ms`; сырой звук не экспортируется.
+
 # Состояние реализации
 
 ## M3/M4/M5 и сквозной Task Mining — 29.09.2026
 
-Этот раздел актуальнее записей ниже от 22–23.09. M4/M5 больше не являются отложенными.
+Этот раздел фиксирует состояние на 29.09 и актуальнее записей ниже от 22–23.09. M4/M5 больше не являются отложенными; описание M4 в нём заменено актуализацией от 30.09 выше.
 
 - **M3:** переведён с OpenRouter на RouterAI (`https://routerai.ru/api/v1`), модель `google/gemma-4-26b-a4b-it`, `temperature=0`, `seed=0`, strict JSON Schema → общий `Query` → прежний детерминированный executor. Runtime prompt — `m3-query-v3`. Секрет переименован в `ROUTERAI_API_KEY`.
 - **M4:** browser Web Speech API (`SpeechRecognition`/`webkitSpeechRecognition`, `ru-RU`) → распознанный текст → тот же M3 RouterAI compiler → тот же executor. Transcript read-only; при ошибке распознавания запись повторяется. Firefox получает предупреждение после входа и не может стартовать M4. Серверного ASR и хранения аудио нет.

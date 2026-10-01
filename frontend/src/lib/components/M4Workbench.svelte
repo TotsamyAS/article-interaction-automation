@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { downloadUrl } from '../access-context';
-  import { ApiError, errorMessage, workbenchError } from '../api';
+  import { api, ApiError, errorMessage, workbenchError } from '../api';
   import { previewTextRequest, submitM4Attempt } from '../trial-actions';
-  import type { AttemptView, Query, QueryResult, TrialView } from '../types';
+  import type { AttemptView, M4TranscriptionView, Query, QueryResult, TrialView } from '../types';
   import type { TrialEventLogger } from '../event-logger';
   import QueryInspector from './QueryInspector.svelte';
   import ResultsTable from './ResultsTable.svelte';
@@ -11,6 +12,11 @@
     trial: TrialView; logger: TrialEventLogger;
     onAttempt: (attempt: AttemptView) => void; onBusy: (busy: boolean, text?: string) => void;
   } = $props();
+
+  const MAX_RECORDING_MS = 20_000;
+  const mediaSupported = typeof navigator !== 'undefined'
+    && Boolean(navigator.mediaDevices?.getUserMedia)
+    && typeof MediaRecorder !== 'undefined';
 
   let transcript = $state('');
   let result = $state<QueryResult | null>(null);
@@ -21,38 +27,139 @@
   let message = $state('');
   let listening = $state(false);
   let busy = $state(false);
-  let recognition: any = null;
+  let recorder: MediaRecorder | null = null;
+  let mediaStream: MediaStream | null = null;
+  let chunks: BlobPart[] = [];
+  let recordingStartedAt = 0;
+  let recordingTimer: number | null = null;
+  let destroyed = false;
 
-  const firefox = typeof navigator !== 'undefined' && /Firefox\//.test(navigator.userAgent);
-  const speechCtor = typeof window !== 'undefined' ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : undefined;
-  const supported = Boolean(speechCtor) && !firefox;
   const previewCurrent = $derived(Boolean(previewQuery && requestId) && transcript.trim() === previewText && requestText === previewText);
 
-  function finishSpeech() {
+  function recordingMimeType() {
+    const candidates = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm'];
+    return candidates.find((value) => MediaRecorder.isTypeSupported(value)) ?? '';
+  }
+
+  function clearRecordingTimer() {
+    if (recordingTimer !== null) window.clearTimeout(recordingTimer);
+    recordingTimer = null;
+  }
+
+  function stopTracks() {
+    mediaStream?.getTracks().forEach((track) => track.stop());
+    mediaStream = null;
+  }
+
+  function invalidatePreview() {
+    transcript = '';
+    result = null;
+    previewQuery = null;
+    previewText = '';
+    requestId = null;
+    requestText = '';
+  }
+
+  function finishSpeechEvent() {
     if (!listening) return;
     listening = false;
     logger.speechFinished('m4-speech');
   }
-  function startSpeech() {
-    message = '';
-    if (!supported || !speechCtor) {
-      message = firefox ? 'Firefox не поддерживает используемый Web Speech API. Откройте эту ссылку в другом современном браузере.' : 'В этом браузере распознавание речи недоступно. Откройте стенд в браузере с Web Speech API.';
+
+  async function transcribeRecording(stoppedRecorder: MediaRecorder) {
+    finishSpeechEvent();
+    clearRecordingTimer();
+    stopTracks();
+    if (destroyed) return;
+
+    const mimeType = stoppedRecorder.mimeType || 'audio/webm';
+    const blob = new Blob(chunks, { type: mimeType });
+    chunks = [];
+    if (!blob.size) {
+      message = 'Браузер не записал звук. Проверьте микрофон и повторите.';
       return;
     }
-    transcript = '';
-    recognition = new speechCtor();
-    recognition.lang = 'ru-RU'; recognition.continuous = false; recognition.interimResults = false; recognition.maxAlternatives = 1;
-    recognition.onresult = (event: any) => { const value = event?.results?.[0]?.[0]?.transcript; if (typeof value === 'string') transcript = value.trim(); };
-    recognition.onerror = (event: any) => { message = event?.error === 'not-allowed' ? 'Нет доступа к микрофону. Разрешите использование микрофона и повторите.' : `Речь не удалось распознать${event?.error ? ` (${event.error})` : ''}. Повторите запись.`; };
-    recognition.onend = finishSpeech;
-    listening = true; logger.speechStarted('m4-speech');
-    try { recognition.start(); } catch (error) { finishSpeech(); message = errorMessage(error); }
+
+    const durationMs = Math.max(1, Math.min(MAX_RECORDING_MS, Math.round(performance.now() - recordingStartedAt)));
+    const asrRequestId = crypto.randomUUID();
+    busy = true;
+    onBusy(true, 'GigaAM-v3 распознаёт речь на сервере…');
+    logger.requestStarted(asrRequestId, 'm4-transcribe');
+    try {
+      const params = new URLSearchParams({ request_id: asrRequestId, duration_ms: String(durationMs) });
+      const recognized = await api<M4TranscriptionView>(`/api/trials/${trial.id}/m4-transcribe?${params}`, {
+        method: 'POST',
+        headers: { 'Content-Type': mimeType },
+        body: blob
+      });
+      transcript = recognized.text.trim();
+      if (!transcript) message = 'Речь не распознана. Повторите запись ближе к микрофону.';
+    } catch (error) {
+      message = workbenchError(error);
+    } finally {
+      logger.requestFinished(asrRequestId, 'm4-transcribe');
+      await logger.flushSafely();
+      busy = false;
+      onBusy(false);
+    }
   }
-  function stopSpeech() { try { recognition?.stop(); } finally { finishSpeech(); } }
+
+  async function startSpeech() {
+    message = '';
+    if (!mediaSupported) {
+      message = 'Этот браузер не умеет записывать звук через MediaRecorder. Используйте актуальный Chrome, Edge или Firefox.';
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false
+      });
+      mediaStream = stream;
+      const mimeType = recordingMimeType();
+      const nextRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recorder = nextRecorder;
+      chunks = [];
+      invalidatePreview();
+      nextRecorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+      nextRecorder.onerror = () => {
+        message = 'Не удалось записать звук. Проверьте доступ к микрофону и повторите.';
+        try { if (nextRecorder.state !== 'inactive') nextRecorder.stop(); } catch { /* already stopping */ }
+      };
+      nextRecorder.onstop = () => { void transcribeRecording(nextRecorder); };
+      nextRecorder.start(250);
+      recordingStartedAt = performance.now();
+      listening = true;
+      logger.speechStarted('m4-speech');
+      recordingTimer = window.setTimeout(stopSpeech, MAX_RECORDING_MS);
+    } catch (error) {
+      clearRecordingTimer();
+      stopTracks();
+      const name = error instanceof DOMException ? error.name : '';
+      message = name === 'NotAllowedError'
+        ? 'Нет доступа к микрофону. Разрешите использование микрофона для этого сайта и повторите.'
+        : `Не удалось открыть микрофон. ${errorMessage(error)}`;
+    }
+  }
+
+  function stopSpeech() {
+    clearRecordingTimer();
+    if (!recorder || recorder.state === 'inactive') {
+      finishSpeechEvent();
+      stopTracks();
+      return;
+    }
+    try { recorder.stop(); }
+    catch (error) {
+      finishSpeechEvent();
+      stopTracks();
+      message = errorMessage(error);
+    }
+  }
 
   async function preview() {
     const value = transcript.trim(); message = '';
-    if (!value) { message = 'Сначала произнесите формулировку задачи и дождитесь распознанного текста.'; return; }
+    if (!value) { message = 'Сначала произнесите формулировку задачи и дождитесь серверного распознавания.'; return; }
     if (!requestId || requestText !== value) { requestId = crypto.randomUUID(); requestText = value; }
     busy = true; onBusy(true, 'RouterAI интерпретирует распознанную речь для предпросмотра…');
     try {
@@ -76,18 +183,29 @@
     } catch (error) { message = workbenchError(error); }
     finally { busy = false; onBusy(false); }
   }
+
+  onDestroy(() => {
+    destroyed = true;
+    clearRecordingTimer();
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.onstop = null;
+      try { recorder.stop(); } catch { /* component is already leaving */ }
+    }
+    finishSpeechEvent();
+    stopTracks();
+  });
 </script>
 
 <div class="workbench" data-track="m4-workbench">
   <div class="workbench-heading"><div><span class="mode-pill">M4 · Speech</span><h2>Голосовая формулировка</h2></div></div>
-  <p class="instruction">Произнесите цель, проверьте распознанный текст и откройте предпросмотр. Web Speech API даёт текст, после чего используется тот же RouterAI-компилятор и общий executor, что в M3.</p>
-  {#if firefox}<p class="notice warning" role="alert">Firefox не подходит для M4: откройте эту же персональную ссылку в другом современном браузере.</p>{/if}
-  {#if !supported && !firefox}<p class="notice warning" role="alert">Web Speech API в этом браузере недоступен. Для M4 используйте браузер с поддержкой распознавания речи.</p>{/if}
+  <p class="instruction">Произнесите цель, остановите запись и дождитесь расшифровки. Аудио обрабатывается локальной GigaAM-v3 на сервере стенда; VPN и Web Speech API не используются. Проверьте распознанный текст, затем откройте предпросмотр RouterAI.</p>
+  {#if !mediaSupported}<p class="notice warning" role="alert">В этом браузере нет MediaRecorder или доступа к микрофону. Для M4 используйте актуальный Chrome, Edge или Firefox.</p>{/if}
   <div class="primary-actions">
     {#if listening}<button type="button" class="secondary" data-track="m4-stop" onclick={stopSpeech}>Остановить запись</button>
-    {:else}<button type="button" class="secondary" data-track="m4-record" disabled={!supported || busy} onclick={startSpeech}>{transcript ? 'Записать заново' : 'Начать запись'}</button>{/if}
+    {:else}<button type="button" class="secondary" data-track="m4-record" disabled={!mediaSupported || busy} onclick={startSpeech}>{transcript ? 'Записать заново' : 'Начать запись'}</button>{/if}
   </div>
-  <textarea data-track="m4-transcript" rows="4" readonly aria-label="Распознанный текст" placeholder="Здесь появится распознанная речь" value={transcript}></textarea>
+  <p class="muted small">Максимальная длительность одной записи — 20 секунд. Аудиофайл после распознавания не сохраняется.</p>
+  <textarea data-track="m4-transcript" rows="4" readonly aria-label="Распознанный текст" placeholder="Здесь появится расшифровка GigaAM-v3" value={transcript}></textarea>
   {#if message}<p class="notice error" role="alert"><strong>Не удалось выполнить действие.</strong> {message}</p>{/if}
   {#if previewQuery && !previewCurrent}<p class="notice warning">Распознанный текст изменился после предпросмотра. Обновите предпросмотр перед итоговой отправкой.</p>{/if}
   <div class="preview-actions">

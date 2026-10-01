@@ -33,6 +33,9 @@ TABLE_COLUMNS = {
                         "status", "requested_model", "response_model", "provider", "system_fingerprint", "prompt_version", "prompt_sha256", "temperature",
                         "raw_response", "query", "error_code", "error_message",
                         "Tllm_ms", "input_tokens", "output_tokens", "started_ms", "finished_ms"],
+    "m4_transcriptions": ["session_id", "participant_code", "kind", "trial_id", "mode", "task_id", "level", "request_id",
+                          "mime_type", "audio_bytes", "audio_duration_ms", "requested_model", "compute_type", "requested_language",
+                          "detected_language", "language_probability", "transcript", "Tasr_ms", "started_ms", "finished_ms"],
     "agent_runs": ["session_id", "participant_code", "kind", "trial_id", "mode", "task_id", "level", "request_id", "user_text",
                    "status", "requested_model", "response_model", "provider", "prompt_version", "prompt_sha256", "temperature", "max_steps",
                    "query", "trajectory", "final_text", "termination", "error_code", "error_message",
@@ -48,7 +51,7 @@ class AnalyticsService:
         self.experiment = experiment
 
     def collect(self, filters: AnalyticsFilter) -> dict:
-        trials, attempts, events, interpretations, agent_runs = [], [], [], [], []
+        trials, attempts, events, interpretations, m4_transcriptions, agent_runs = [], [], [], [], [], []
         # One transaction freezes a consistent snapshot of all exported tables.
         with self.experiment.database.transaction() as connection:
             sessions = connection.execute("SELECT * FROM sessions ORDER BY created_ms, id").fetchall()
@@ -105,6 +108,16 @@ class AnalyticsService:
                                             "error_message": item["error_message"], "Tllm_ms": item["llm_ms"],
                                             "input_tokens": item["input_tokens"], "output_tokens": item["output_tokens"],
                                             "started_ms": item["started_ms"], "finished_ms": item["finished_ms"]})
+                for item in session["m4_transcription_log"]:
+                    if item["trial_id"] not in selected:
+                        continue
+                    m4_transcriptions.append({**selected[item["trial_id"]], "request_id": item["request_id"],
+                                              "mime_type": item["mime_type"], "audio_bytes": item["audio_bytes"],
+                                              "audio_duration_ms": item["audio_duration_ms"], "requested_model": item["requested_model"],
+                                              "compute_type": item["compute_type"], "requested_language": item["requested_language"],
+                                              "detected_language": item["detected_language"], "language_probability": item["language_probability"],
+                                              "transcript": item["transcript"], "Tasr_ms": item["asr_ms"],
+                                              "started_ms": item["started_ms"], "finished_ms": item["finished_ms"]})
                 for item in session["agent_log"]:
                     if item["trial_id"] not in selected:
                         continue
@@ -120,11 +133,12 @@ class AnalyticsService:
                                        "input_tokens": item["input_tokens"], "output_tokens": item["output_tokens"],
                                        "started_ms": item["started_ms"], "finished_ms": item["finished_ms"]})
             generated = self.experiment.clock()
-        return {"protocol": {"export_schema_version": 5, "generated_at_ms": generated, "filters": filters.model_dump(mode="json"),
+        return {"protocol": {"export_schema_version": 6, "generated_at_ms": generated, "filters": filters.model_dump(mode="json"),
                              "manifest": self.experiment.manifest, "time_units": "milliseconds", "missing_value": "empty cell / JSON null",
                              "summary_population": "terminal trials only; actual Tcorrect includes successful trials only",
                              "training_excluded": not filters.include_practice},
-                "trials": trials, "attempts": attempts, "events": events, "interpretations": interpretations, "agent_runs": agent_runs, "summary": summarize(trials)}
+                "trials": trials, "attempts": attempts, "events": events, "interpretations": interpretations,
+                "m4_transcriptions": m4_transcriptions, "agent_runs": agent_runs, "summary": summarize(trials)}
 
 
 def _mean(rows, field):

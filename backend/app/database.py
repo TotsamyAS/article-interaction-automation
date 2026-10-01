@@ -8,6 +8,7 @@ from .catalog import build_catalog
 from .config import Settings
 from .dataset import generate_dataset, dataset_digest
 from .engine import execute
+from .asr import ASR_ENGINE, ASR_ENGINE_VERSION
 
 
 def encode(value) -> str:
@@ -68,9 +69,22 @@ class Database:
             exclude={
                 "host", "port", "database_path", "public_base_url", "login_redirect_path", "access_cookie_seconds",
                 "llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds", "m5_max_llm_steps",
+                "asr_model", "asr_revision", "asr_model_path", "asr_device", "asr_compute_type", "asr_language",
+                "asr_max_audio_bytes", "asr_max_audio_seconds",
             },
         )
+        m4_asr = {
+            "engine": ASR_ENGINE,
+            "engine_version": ASR_ENGINE_VERSION,
+            "model": self.settings.asr_model,
+            "revision": self.settings.asr_revision,
+            "device": self.settings.asr_device,
+            "compute_type": self.settings.asr_compute_type,
+            "language": self.settings.asr_language,
+            "audio_limit_seconds": self.settings.asr_max_audio_seconds,
+        }
         manifest = {"dataset_sha256": dataset_digest(records), "protocol": protocol, "protocol_version": 1,
+                    "m4_asr": m4_asr,
                     "catalog_sha256": hashlib.sha256(encode({key: {"query": task.query.model_dump(mode="json"), "prompt": task.prompt}
                                                              for key, task in catalog.items()}).encode()).hexdigest()}
         with self.transaction() as connection:
@@ -81,7 +95,11 @@ class Database:
                 legacy_protocol = existing_manifest.get("protocol")
                 if isinstance(legacy_protocol, dict):
                     legacy_protocol = dict(legacy_protocol)
-                    for key in ("llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds", "m5_max_llm_steps"):
+                    for key in (
+                        "llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds", "m5_max_llm_steps",
+                        "asr_model", "asr_revision", "asr_model_path", "asr_device", "asr_compute_type", "asr_language",
+                        "asr_max_audio_bytes", "asr_max_audio_seconds",
+                    ):
                         legacy_protocol.pop(key, None)
                     existing_manifest["protocol"] = legacy_protocol
                 existing_manifest.pop("m3_prompt_sha256", None)

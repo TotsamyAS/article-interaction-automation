@@ -30,12 +30,13 @@ def first_mode(service, mode):
     raise AssertionError(mode)
 
 
-def test_logging_flags_are_enabled_but_not_part_of_experiment_protocol(settings):
+def test_logging_flags_are_configured_but_not_part_of_experiment_protocol(settings):
     database = Database(settings)
     database.initialize()
     service = ExperimentService(database)
     assert settings.logging.llmRoutesLogging is True
-    assert settings.logging.taskMiningLogging is True
+    assert settings.logging.taskMiningLogging is False
+    assert settings.logging.asrLogging is True
     assert "logging" not in service.manifest["protocol"]
 
 
@@ -60,8 +61,13 @@ def test_m4_invalid_query_log_contains_generated_query_and_executor_error(settin
     assert '"field": "status"' in messages
 
 
-def test_task_mining_409_log_contains_server_and_incoming_cursors(service, clock, caplog):
+def test_task_mining_409_log_contains_server_and_incoming_cursors(settings, clock, caplog):
     caplog.set_level(logging.INFO, logger="uvicorn.error")
+    enabled_logging = settings.logging.model_copy(update={"taskMiningLogging": True})
+    enabled_settings = settings.model_copy(update={"logging": enabled_logging})
+    database = Database(enabled_settings)
+    database.initialize()
+    service = ExperimentService(database, clock)
     session = service.create_session(SessionCreate(participant_code="LOGEVENTS"))
     trial = service.start_trial(session["trials"][0]["id"])
     clock.advance(2000)

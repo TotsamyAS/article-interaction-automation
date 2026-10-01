@@ -18,8 +18,17 @@
   "llm_temperature": 0.0,
   "llm_timeout_seconds": 60,
   "m5_max_llm_steps": 12,
+  "asr_model": "ai-sage/GigaAM-v3",
+  "asr_revision": "e2e_rnnt",
+  "asr_model_path": "/opt/asr-model",
+  "asr_device": "cpu",
+  "asr_compute_type": "float32",
+  "asr_language": "ru",
+  "asr_max_audio_bytes": 8388608,
+  "asr_max_audio_seconds": 20,
   "logging": {
     "llmRoutesLogging": true,
-    "taskMiningLogging": true
+    "taskMiningLogging": false,
+    "asrLogging": true
   }
 }

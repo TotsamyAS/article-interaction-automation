@@ -50,6 +50,15 @@ export interface PreviewView {
   result: QueryResult;
 }
 
+export interface M4TranscriptionView {
+  request_id: string;
+  text: string;
+  model: string;
+  detected_language: string | null;
+  language_probability: number | null;
+  asr_ms: number;
+}
+
 export interface AttemptSummary { id: string; ordinal: number; correct: boolean; started_ms: number; finished_ms: number }
 export interface TrialView {
   wording_version: string;

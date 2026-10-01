@@ -249,6 +249,61 @@ class ExperimentService:
                                 int(correct), started, finished, content))
             return response
 
+    @staticmethod
+    def _m4_transcription_view(row) -> dict:
+        return {
+            "request_id": row["request_id"],
+            "text": row["transcript"],
+            "model": row["requested_model"],
+            "detected_language": row["detected_language"],
+            "language_probability": row["language_probability"],
+            "asr_ms": row["asr_ms"],
+        }
+
+    def cached_m4_transcription(self, trial_id: str, request_id: str):
+        """Return an idempotent ASR result, or validate that a new M4 ASR call may start."""
+        with self.database.transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM m4_transcriptions WHERE trial_id = ? AND request_id = ?",
+                (trial_id, request_id),
+            ).fetchone()
+            if existing:
+                return self._m4_transcription_view(existing)
+            trial = self._trial(connection, trial_id)
+            self._expire(connection, trial, self.clock())
+            if trial["status"] != "active":
+                raise DomainError("trial_not_active", "Проба не активна или её время истекло.", 409)
+            if trial["mode"] != Mode.M4.value:
+                raise DomainError("mode_mismatch", "Распознавание речи доступно только в M4.", 409)
+            if Mode.M4 not in self.available_modes:
+                raise DomainError("mode_unavailable", "M4 не настроен.", 409)
+        return None
+
+    def save_m4_transcription(self, *, trial_id: str, request_id: str, mime_type: str, audio_bytes: int,
+                              audio_duration_ms: int, model: str, compute_type: str, requested_language: str,
+                              detected_language: str | None, language_probability: float | None, transcript: str,
+                              asr_ms: float, started_ms: int, finished_ms: int):
+        with self.database.transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM m4_transcriptions WHERE trial_id = ? AND request_id = ?",
+                (trial_id, request_id),
+            ).fetchone()
+            if existing:
+                return self._m4_transcription_view(existing)
+            connection.execute(
+                "INSERT INTO m4_transcriptions "
+                "(id, trial_id, request_id, mime_type, audio_bytes, audio_duration_ms, requested_model, compute_type, "
+                "requested_language, detected_language, language_probability, transcript, asr_ms, started_ms, finished_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid4()), trial_id, request_id, mime_type, audio_bytes, audio_duration_ms, model, compute_type,
+                 requested_language, detected_language, language_probability, transcript, asr_ms, started_ms, finished_ms),
+            )
+            row = connection.execute(
+                "SELECT * FROM m4_transcriptions WHERE trial_id = ? AND request_id = ?",
+                (trial_id, request_id),
+            ).fetchone()
+            return self._m4_transcription_view(row)
+
     def preview_m3(self, trial_id: str, request: M3AttemptInput):
         return self._llm_request(trial_id, request, Mode.M3, finalize=False)
 
@@ -602,6 +657,10 @@ class ExperimentService:
         result["interpretation_log"] = [dict(row) | {"query": json.loads(row["query_json"]) if row["query_json"] else None}
                                         for row in connection.execute(
             "SELECT i.* FROM m3_interpretations i JOIN trials t ON t.id = i.trial_id WHERE t.session_id = ? ORDER BY t.position, i.started_ms, i.id", (session_id,))]
+        result["m4_transcription_log"] = [dict(row) for row in connection.execute(
+            "SELECT a.* FROM m4_transcriptions a JOIN trials t ON t.id = a.trial_id WHERE t.session_id = ? ORDER BY t.position, a.started_ms, a.id",
+            (session_id,),
+        )]
         result["agent_log"] = [dict(row) | {"query": json.loads(row["query_json"]) if row["query_json"] else None,
                                              "trajectory": json.loads(row["trajectory_json"]) if row["trajectory_json"] else None}
                                for row in connection.execute(
