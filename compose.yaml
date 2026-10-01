@@ -9,8 +9,6 @@ services:
     environment:
       INVITATION_SIGNING_KEY: ${INVITATION_SIGNING_KEY:?Set INVITATION_SIGNING_KEY in the root .env yourself}
       ROUTERAI_API_KEY: ${ROUTERAI_API_KEY:?Set ROUTERAI_API_KEY in the root .env yourself}
-      HF_HUB_DISABLE_TELEMETRY: "1"
-      HF_HUB_OFFLINE: "1"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; from app.config import load_settings; urllib.request.urlopen(f'http://localhost:{load_settings().port}/health', timeout=3)"]

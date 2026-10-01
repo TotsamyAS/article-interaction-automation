@@ -25,7 +25,7 @@ from .engine import execute
 from .llm import OpenAICompatibleInterpreter, key_from_runtime as llm_key_from_runtime
 from .agent import RouterAIAgent
 from .terminology import display_text
-from .asr import ASRError, GigaAMASR
+from .asr import ASRError, ASR_STORAGE_KIND, RouterAIASR
 
 
 LOGGER = logging.getLogger("uvicorn.error")
@@ -63,7 +63,7 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
             # Existing tests/in-process callers that replace M3 do not implicitly perform external M5 calls.
             agent = None
         service.configure_m5(agent)
-        asr = asr_factory(settings) if asr_factory is not None else GigaAMASR(settings)
+        asr = asr_factory(settings) if asr_factory is not None else RouterAIASR(settings)
         app.state.service = service
         app.state.asr = asr
         app.state.access = AccessService(database, signatures, clock=lambda: clock() / 1000)
@@ -128,12 +128,6 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
 
     @app.get("/internal/asr-ready", include_in_schema=False)
     def asr_ready():
-        try:
-            app.state.asr.ensure_loaded()
-        except Exception as exc:
-            if settings.logging.asrLogging:
-                LOGGER.exception("[m4-asr] warmup failed")
-            raise DomainError("asr_unavailable", f"Не удалось загрузить локальную ASR-модель: {exc}", 503) from exc
         return {"status": "ok", "protocol": app.state.asr.protocol}
 
     @router.get("/protocol", tags=["Протокол"])
@@ -253,7 +247,7 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
             raise DomainError("asr_no_speech", "Речь не распознана. Повторите запись ближе к микрофону.", 422)
         response = service.save_m4_transcription(
             trial_id=trial_id, request_id=str(request_id), mime_type=mime_type, audio_bytes=len(audio),
-            audio_duration_ms=duration_ms, model=settings.asr_model, compute_type=settings.asr_compute_type,
+            audio_duration_ms=duration_ms, model=settings.asr_model, compute_type=ASR_STORAGE_KIND,
             requested_language=settings.asr_language, detected_language=result.detected_language,
             language_probability=result.language_probability, transcript=result.text.strip(), asr_ms=result.asr_ms,
             started_ms=started_ms, finished_ms=finished_ms,

@@ -8,4 +8,4 @@ __pycache__/
 data/
 node_modules/
 .DS_Store
-docs/article_project.docx
+docs/article_project.docxbenchmarks/asr_benchmark.wav

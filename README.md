@@ -1,6 +1,6 @@
 # Экспериментальный стенд
 
-Стенд по разделам 4–5 [проекта статьи](docs/article_project.docx): FastAPI backend + Svelte 5 frontend на Bun. Реализованы M1–M5, 120 воспроизводимых записей, 15 экспериментальных задач, тренировка, попытки, сквозной Task Mining, доступ по многоразовым приглашениям и выгрузка CSV/Excel. M3 и M4 используют RouterAI как LLM-компилятор в общий `Query`; M4 записывает речь через `MediaRecorder` и распознаёт её локально на сервере через `GigaAM-v3/e2e_rnnt` (CPU `float32`). M5 использует RouterAI как агентный planner над семью атомарными инструментами.
+Стенд по разделам 4–5 [проекта статьи](docs/article_project.docx): FastAPI backend + Svelte 5 frontend на Bun. Реализованы M1–M5, 120 воспроизводимых записей, 15 экспериментальных задач, тренировка, попытки, сквозной Task Mining, доступ по многоразовым приглашениям и выгрузка CSV/Excel. M3 и M4 используют RouterAI как LLM-компилятор в общий `Query`; M4 записывает речь через `MediaRecorder` и распознаёт её через RouterAI Audio Transcriptions, причём ASR-модель задаётся в `backend/config.json`. M5 использует RouterAI как агентный planner над семью атомарными инструментами.
 
 Frontend работает на `http://localhost:3033`. Он является единой браузерной точкой входа и проксирует `/api`, `/health`, `/docs` и `/openapi.json` во внутренний backend. Это сохраняет один origin для HttpOnly-cookie и проверки cross-origin запросов.
 
@@ -21,7 +21,7 @@ ROUTERAI_API_KEY=<ключ RouterAI>
 docker compose up -d --build
 ```
 
-Backend image downloads `ai-sage/GigaAM-v3` revision `e2e_rnnt` during `docker build`; if the model cannot be downloaded, the image build fails before the stand starts. Runtime M4 uses only the baked `/opt/asr-model`.
+M4 ASR не требует локальных весов: backend вызывает RouterAI `POST /api/v1/audio/transcriptions`. По умолчанию `asr_model` — `nvidia/nemotron-3.5-asr-streaming-multilingual-0.6b`; модель можно заменить на любой совместимый RouterAI transcription model без изменения кода.
 
 Открыть стенд: `http://localhost:3033`. API-документация: `http://localhost:3033/docs`.
 
@@ -83,7 +83,7 @@ docker compose up -d --no-build
 4. В M1 вручную добавлять фильтры, применять preview, задавать группировку/агрегат/экстремум/сортировку/CSV и нажимать «Проверить результат».
 5. В M2 собрать структурированный запрос через TagInput и один раз нажать «Выполнить».
 6. В M3 описать требуемый результат обычным текстом. Backend отправляет текст и фиксированный prompt в RouterAI, принимает строго структурированный `Query`, валидирует его и выполняет тем же детерминированным engine, что M1/M2.
-7. В M4 произнести запрос. Браузер пишет аудиофрагмент до 20 секунд через `MediaRecorder` и отправляет его по HTTPS на backend; локальная `GigaAM-v3/e2e_rnnt` на CPU делает расшифровку, после чего текст проходит ровно тот же RouterAI-компилятор и общий executor, что M3. Расшифровка перед отправкой не редактируется: при ошибке участник записывает запрос заново. Аудио после распознавания не сохраняется. VPN и Web Speech API не нужны; M4 поддерживается в актуальных Chrome/Edge/Firefox при наличии `MediaRecorder` и разрешения микрофона.
+7. В M4 произнести запрос. Браузер пишет аудиофрагмент до 20 секунд через `MediaRecorder` и отправляет его по HTTPS на backend; backend передаёт запись выбранной в `config.json` ASR-модели RouterAI, после чего текст проходит ровно тот же RouterAI-компилятор и общий executor, что M3. Расшифровка перед отправкой не редактируется: при ошибке участник записывает запрос заново. Аудио после распознавания не сохраняется. VPN и Web Speech API не нужны; M4 поддерживается в актуальных Chrome/Edge/Firefox при наличии `MediaRecorder` и разрешения микрофона.
 8. В M5 ввести цель обычным текстом. RouterAI-агент выбирает последовательность из семи атомарных инструментов (`search_tasks`, `filter_by_field`, `group_by`, `aggregate`, `find_extremum`, `sort`, `export_result`), максимум 12 LLM-шагов. Итоговый `Query` и результат всё равно проходят общий executor и проверку эталона.
 9. При задаче с CSV успешная попытка запускает скачивание результата. Попытки остаются идемпотентными на сетевом повторе.
 
@@ -111,9 +111,13 @@ M3 использует `backend/app/llm.py`: OpenAI-compatible `POST /chat/comp
 
 Системный prompt генерируется из фактических допустимых значений набора данных и фиксированной D0, задаёт точную семантику дат, NULL, меток, агрегатов, группировки, экстремума и CSV. Few-shot примеры синтетические и не содержат экспериментальные формулировки C1a–C3e. Структурированная схема строится непосредственно из Pydantic-контракта `Query`. Runtime prompt M3/M4 имеет версию `m3-query-v3` и явно связывает термины интерфейса «Направление работ»/«Рабочий цикл» с каноническими полями набора.
 
-M4 использует self-hosted ASR в backend: `MediaRecorder` передаёт аудио на `/api/trials/{trial_id}/m4-transcribe`, `GigaAM-v3/e2e_rnnt` переводит русскую речь в текст, а дальше используется тот же M3-компилятор RouterAI и тот же детерминированный executor. Веса модели (~449 MB) скачиваются на этапе `docker build` и запекаются в backend image; runtime работает с локальным `/opt/asr-model` и `HF_HUB_OFFLINE=1`, поэтому запрос участника не зависит от Hugging Face. Аудио после распознавания не сохраняется; в аналитике сохраняются transcript и технические метаданные ASR. Task Mining фиксирует границы речи и отдельно время системного ожидания ASR.
+M4 использует RouterAI ASR: `MediaRecorder` передаёт аудио на `/api/trials/{trial_id}/m4-transcribe`, backend вызывает OpenAI-compatible `POST /audio/transcriptions`, а дальше используется тот же M3-компилятор RouterAI и тот же детерминированный executor. `asr_model` в `backend/config.json` задаёт конкретную RouterAI-модель; значение по умолчанию — `nvidia/nemotron-3.5-asr-streaming-multilingual-0.6b`. Аудио после распознавания не сохраняется; в аналитике сохраняются transcript и технические метаданные ASR. Task Mining фиксирует границы речи и отдельно время системного ожидания ASR.
 
 На каждом M3/M4 LLM-вызове сохраняются исходный текст, raw LLM response, валидированный Query, версия/hash prompt, температура, requested/response model, provider (когда его возвращает RouterAI), `Tllm`, токены и тип ошибки. Ошибки провайдера/структуры не расходуют пользовательскую попытку; семантически неверный, но исполнимый Query — расходует. После начала M3/M4-сбора model/prompt/temperature не смешиваются внутри одного экспериментального тома.
+
+### ASR benchmark
+
+`benchmarks/asr_routerai_benchmark.ipynb` записывает одну фиксированную русскую фразу с микрофона в WAV и отправляет один и тот же файл в Nemotron 3.5 ASR и Qwen3-ASR-0.6B. Notebook выводит transcript, latency, нормализованное точное совпадение и WER. Ключ берётся из `ROUTERAI_API_KEY` или запрашивается скрытым вводом и в notebook не сохраняется. После выбора модели перенесите её идентификатор в `backend/config.json` (`asr_model`).
 
 ## M5: RouterAI agent
 
@@ -141,7 +145,7 @@ M5 хранит наблюдаемую trajectory отдельно: LLM/tool ш�
 
 ## Текущие границы
 
-- Полностью доступны M1–M5. M4 использует `MediaRecorder` и self-hosted `GigaAM-v3/e2e_rnnt`; Web Speech API/VPN не требуются, Firefox поддерживается при доступном микрофоне.
+- Полностью доступны M1–M5. M4 использует `MediaRecorder` и RouterAI Audio Transcriptions с моделью из `backend/config.json`; Web Speech API/VPN не требуются, Firefox поддерживается при доступном микрофоне.
 - Аналитические статистические тесты и графики не выполняются автоматически: исследователь получает Excel/CSV.
 - Frontend построен из переиспользованных компонентов `TagInput`, `LiveSearchProgress`, `ConfirmDialog`, `AppToast`; табличная логика адаптирована из `Corpus` без чужих API/ролей.
 - Для независимого нового эксперимента используйте новый Compose project name/том; не меняйте параметры набора/эталонов в существующем эксперименте. Обычное обновление приложения через `docker compose up -d --build` сохраняет совместимость существующего тома; M3/M4 LLM-конфигурация фиксируется в журнале интерпретаций; M5 agent protocol сохраняется в `m5_agent_runs`. После перехода с прежнего M3/OpenRouter на RouterAI основную выборку следует вести в новом экспериментальном томе, чтобы не смешивать разные LLM-протоколы.

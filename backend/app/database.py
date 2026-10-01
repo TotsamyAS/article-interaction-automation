@@ -69,17 +69,15 @@ class Database:
             exclude={
                 "host", "port", "database_path", "public_base_url", "login_redirect_path", "access_cookie_seconds",
                 "llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds", "m5_max_llm_steps",
-                "asr_model", "asr_revision", "asr_model_path", "asr_device", "asr_compute_type", "asr_language",
+                "asr_provider", "asr_model", "asr_language", "asr_timeout_seconds",
                 "asr_max_audio_bytes", "asr_max_audio_seconds",
             },
         )
         m4_asr = {
             "engine": ASR_ENGINE,
             "engine_version": ASR_ENGINE_VERSION,
+            "provider": self.settings.asr_provider,
             "model": self.settings.asr_model,
-            "revision": self.settings.asr_revision,
-            "device": self.settings.asr_device,
-            "compute_type": self.settings.asr_compute_type,
             "language": self.settings.asr_language,
             "audio_limit_seconds": self.settings.asr_max_audio_seconds,
         }
@@ -97,7 +95,7 @@ class Database:
                     legacy_protocol = dict(legacy_protocol)
                     for key in (
                         "llm_base_url", "llm_model", "llm_temperature", "llm_timeout_seconds", "m5_max_llm_steps",
-                        "asr_model", "asr_revision", "asr_model_path", "asr_device", "asr_compute_type", "asr_language",
+                        "asr_provider", "asr_model", "asr_language", "asr_timeout_seconds",
                         "asr_max_audio_bytes", "asr_max_audio_seconds",
                     ):
                         legacy_protocol.pop(key, None)

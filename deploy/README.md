@@ -46,6 +46,6 @@ Do not run that command after collecting experiment data: it removes Docker volu
 
 ## M4 ASR model in backend image
 
-M4 uses self-hosted `ai-sage/GigaAM-v3` revision `e2e_rnnt` on CPU. The ~449 MB model is downloaded **during the backend Docker build** into `/opt/asr-model`; runtime sets `HF_HUB_OFFLINE=1`, so participant requests never download model files. The deploy script removes the obsolete faster-whisper cache volume before the first GigaAM build to avoid storing both model copies on the small server disk. No additional GitHub secret is required.
+M4 ASR uses RouterAI `POST /api/v1/audio/transcriptions`; no ASR weights or Torch runtime are stored on the VM. The model is selected by `asr_model` in `backend/config.json` and defaults to `nvidia/nemotron-3.5-asr-streaming-multilingual-0.6b`. The existing `ROUTERAI_API_KEY` secret is shared with M3/M5, so deployment needs no new secret.
 
-The first GigaAM build therefore needs outbound HTTPS access to Hugging Face. The selected `e2e_rnnt` repository snapshot is about 449 MB, substantially smaller than the previous ~1.6 GB `large-v3-turbo` cache. Build cache and the obsolete faster-whisper model volume are removed before the migration build to preserve headroom on the ~10 GB host. Later runtime requests do not need Hugging Face. Do not run `docker system prune --volumes` after deployment because it can delete the experiment-data volume.
+The deploy script removes only the obsolete `asr-model-cache` volume from older releases and keeps `experiment-data`. Do not run `docker system prune --volumes` after deployment because it can delete the experiment database.

@@ -37,12 +37,10 @@ class Settings(BaseModel):
     llm_temperature: float = Field(ge=0, le=2)
     llm_timeout_seconds: float = Field(gt=0, le=120)
     m5_max_llm_steps: int = Field(gt=0, le=50)
-    asr_model: str = Field(min_length=1, max_length=160)
-    asr_revision: str = Field(min_length=1, max_length=160)
-    asr_model_path: str = Field(min_length=1, max_length=500)
-    asr_device: Literal["cpu"] = "cpu"
-    asr_compute_type: Literal["float32"] = "float32"
+    asr_provider: Literal["routerai"] = "routerai"
+    asr_model: str = Field(min_length=1, max_length=200)
     asr_language: Literal["ru"] = "ru"
+    asr_timeout_seconds: float = Field(gt=0, le=120)
     asr_max_audio_bytes: int = Field(gt=0, le=32 * 1024 * 1024)
     asr_max_audio_seconds: int = Field(gt=0, le=120)
     logging: LoggingSettings = Field(default_factory=LoggingSettings, exclude=True)

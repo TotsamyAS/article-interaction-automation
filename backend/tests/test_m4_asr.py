@@ -1,42 +1,48 @@
+import json
 import logging
 from unittest.mock import Mock
-
-import pytest
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from app.access import Principal, Signatures, require_principal
 from app.api import create_app
-from app.asr import ASRError, ASRResult, GigaAMASR
+from app.asr import ASRResult, RouterAIASR
 from app.contracts import SessionCreate
 
 
 class FakeASR:
     protocol = {
-        "engine": "gigaam-v3",
-        "engine_version": "3",
-        "model": "ai-sage/GigaAM-v3",
-        "revision": "e2e_rnnt",
-        "device": "cpu",
-        "compute_type": "float32",
+        "engine": "routerai",
+        "engine_version": "audio-transcriptions-v1",
+        "provider": "routerai",
+        "model": "nvidia/nemotron-3.5-asr-streaming-multilingual-0.6b",
         "language": "ru",
         "audio_limit_seconds": 20,
     }
 
     def __init__(self):
         self.calls = 0
-        self.loaded = False
-
-    def ensure_loaded(self):
-        self.loaded = True
-        return object()
 
     def transcribe(self, audio, mime_type):
         self.calls += 1
         assert audio == b"fake-webm"
         assert mime_type == "audio/webm"
-        return ASRResult("Показать открытые задачи", "ru", 0.99, 123.5)
+        return ASRResult("Показать открытые задачи", "ru", None, 123.5)
+
+
+class FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
 
 
 def first_m4(service):
@@ -76,9 +82,11 @@ def test_m4_audio_is_transcribed_idempotently_and_exported(settings, clock):
         assert row["audio_bytes"] == len(b"fake-webm")
         assert row["audio_duration_ms"] == 1200
         assert row["transcript"] == "Показать открытые задачи"
+        assert row["compute_type"] == "routerai-api"
         assert exported["attempt_log"] == []
         analytics = client.get("/api/analytics").json()
-        assert analytics["protocol"]["manifest"]["m4_asr"]["model"] == "ai-sage/GigaAM-v3"
+        assert analytics["protocol"]["manifest"]["m4_asr"]["model"] == settings.asr_model
+        assert analytics["protocol"]["manifest"]["m4_asr"]["provider"] == "routerai"
         assert len(analytics["m4_transcriptions"]) == 1
         assert analytics["m4_transcriptions"][0]["Tasr_ms"] == 123.5
 
@@ -106,7 +114,7 @@ def test_m4_transcribe_rejects_unsupported_audio_before_asr(settings, clock):
         assert fake_asr.calls == 0
 
 
-def test_internal_asr_ready_warms_long_lived_instance(settings, clock):
+def test_internal_asr_ready_reports_routerai_protocol(settings, clock):
     fake_asr = FakeASR()
     app = create_app(
         settings,
@@ -118,20 +126,37 @@ def test_internal_asr_ready_warms_long_lived_instance(settings, clock):
     with TestClient(app) as client:
         response = client.get("/internal/asr-ready")
         assert response.status_code == 200
-        assert response.json()["protocol"]["model"] == "ai-sage/GigaAM-v3"
-        assert fake_asr.loaded is True
+        assert response.json()["protocol"]["engine"] == "routerai"
+        assert response.json()["protocol"]["model"] == settings.asr_model
 
 
-def test_missing_baked_model_is_a_controlled_logged_error(settings, tmp_path, caplog):
+def test_routerai_asr_uses_configured_model_and_same_audio_endpoint(settings, caplog):
+    calls = []
+
+    def opener(request, timeout):
+        calls.append((request, timeout))
+        return FakeResponse({"text": "Проверка распознавания.", "language": "ru"})
+
+    configured = settings.model_copy(update={"asr_model": "qwen/qwen3-asr-0.6b"})
     caplog.set_level(logging.INFO, logger="uvicorn.error")
-    configured = settings.model_copy(update={"asr_model_path": str(tmp_path / "missing-model")})
-    asr = GigaAMASR(configured)
+    asr = RouterAIASR(configured, opener=opener, api_key="test-key")
+    result = asr.transcribe(b"fake-webm", "audio/webm;codecs=opus")
 
-    with pytest.raises(ASRError) as caught:
-        asr.ensure_loaded()
-
-    assert "backend image" in str(caught.value)
+    assert result.text == "Проверка распознавания."
+    assert result.detected_language == "ru"
+    assert len(calls) == 1
+    request, timeout = calls[0]
+    assert request.full_url == f"{settings.llm_base_url}/audio/transcriptions"
+    assert timeout == settings.asr_timeout_seconds
+    assert request.headers["Authorization"] == "Bearer test-key"
+    content_type = request.headers["Content-type"]
+    assert content_type.startswith("multipart/form-data; boundary=")
+    assert b'name="model"' in request.data
+    assert b"qwen/qwen3-asr-0.6b" in request.data
+    assert b'name="language"' in request.data
+    assert b"ru" in request.data
+    assert b'filename="speech.webm"' in request.data
+    assert b"fake-webm" in request.data
     messages = "\n".join(record.getMessage() for record in caplog.records)
-    assert "[asr]" in messages
-    assert '"stage": "model_files_missing"' in messages
-    assert "config.json" in messages
+    assert '"stage": "transcribe_success"' in messages
+    assert '"model": "qwen/qwen3-asr-0.6b"' in messages
