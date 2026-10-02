@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { downloadUrl } from '../access-context';
   import { ApiError, workbenchError } from '../api';
   import { previewTextRequest, submitM5Attempt } from '../trial-actions';
   import type { AttemptView, Query, QueryResult, TrialView } from '../types';
@@ -7,9 +6,10 @@
   import QueryInspector from './QueryInspector.svelte';
   import ResultsTable from './ResultsTable.svelte';
 
-  let { trial, logger, onAttempt, onBusy }: {
+  let { trial, logger, onAttempt, onBusy, validationTaskId }: {
     trial: TrialView; logger: TrialEventLogger;
     onAttempt: (attempt: AttemptView) => void; onBusy: (busy: boolean, text?: string) => void;
+    validationTaskId?: string;
   } = $props();
 
   let text = $state('');
@@ -28,7 +28,7 @@
     if (!requestId || requestText !== value) { requestId = crypto.randomUUID(); requestText = value; }
     busy = true; onBusy(true, 'Агент RouterAI выполняет инструменты для предпросмотра…');
     try {
-      const next = await previewTextRequest(trial, value, logger, requestId, 'm5-preview');
+      const next = await previewTextRequest(trial, value, logger, requestId, 'm5-preview', validationTaskId);
       previewQuery = next.query; result = next.result; previewText = value;
     } catch (error) {
       message = workbenchError(error);
@@ -41,9 +41,8 @@
     if (!previewCurrent || !requestId) { message = 'Сначала получите актуальный предпросмотр. Итоговая кнопка засчитывает уже выполненную агентом траекторию и показанный Query, не запускает агента второй раз.'; return; }
     busy = true; onBusy(true, 'Фиксируем показанный результат агента как итоговый ответ…');
     try {
-      const attempt = await submitM5Attempt(trial, previewText, logger, requestId);
+      const attempt = await submitM5Attempt(trial, previewText, logger, requestId, validationTaskId);
       result = attempt.result;
-      if (attempt.export_url) { const link = document.createElement('a'); link.href = downloadUrl(attempt.export_url); link.download = 'result.csv'; link.click(); }
       onAttempt(attempt);
     } catch (error) { message = workbenchError(error); }
     finally { busy = false; onBusy(false); }

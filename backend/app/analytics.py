@@ -22,6 +22,7 @@ class AnalyticsFilter(Contract):
 
 
 TABLE_COLUMNS = {
+    "registry": ["participant_code", "session_id", "sequence_no", "created_ms", "complete", "completion_code", "trials", "correct", "incomplete"],
     "trials": ["session_id", "participant_code", "kind", "sequence_no", "trial_id", "position", "block_index", "mode", "task_id", "level", "tci",
                "status", "end_reason", "trial_limit_seconds", "attempt_limit", "wording_version", "started_ms", "ended_ms", "elapsed_ms", "Tcorrect_actual_ms", "Tfirst_ms", "Tuser_active_ms",
                "A1_actual", "attempts", "Nretry_actual", "Tcorrect_analysis_ms", "A1_analysis", "Nretry_analysis", "incomplete"],
@@ -51,7 +52,7 @@ class AnalyticsService:
         self.experiment = experiment
 
     def collect(self, filters: AnalyticsFilter) -> dict:
-        trials, attempts, events, interpretations, m4_transcriptions, agent_runs = [], [], [], [], [], []
+        registry, trials, attempts, events, interpretations, m4_transcriptions, agent_runs = [], [], [], [], [], [], []
         # One transaction freezes a consistent snapshot of all exported tables.
         with self.experiment.database.transaction() as connection:
             sessions = connection.execute("SELECT * FROM sessions ORDER BY created_ms, id").fetchall()
@@ -61,6 +62,19 @@ class AnalyticsService:
                 if filters.participant_code and row["participant_code"] != filters.participant_code:
                     continue
                 session = self.experiment.session_snapshot(connection, dict(row))
+                if session["kind"] == "experiment" and (not filters.completed_only or session["complete"]):
+                    terminal = [trial for trial in session["trials"] if trial["status"] in ("correct", "incomplete")]
+                    registry.append({
+                        "participant_code": session["participant_code"],
+                        "session_id": session["id"],
+                        "sequence_no": session["sequence_no"],
+                        "created_ms": session["created_ms"],
+                        "complete": session["complete"],
+                        "completion_code": session.get("completion_code"),
+                        "trials": len(session["trials"]),
+                        "correct": sum(trial["status"] == "correct" for trial in terminal),
+                        "incomplete": sum(trial["status"] == "incomplete" for trial in terminal),
+                    })
                 selected = {}
                 base = {"session_id": session["id"], "participant_code": session["participant_code"], "kind": session["kind"]}
                 for trial in session["trials"]:
@@ -133,11 +147,11 @@ class AnalyticsService:
                                        "input_tokens": item["input_tokens"], "output_tokens": item["output_tokens"],
                                        "started_ms": item["started_ms"], "finished_ms": item["finished_ms"]})
             generated = self.experiment.clock()
-        return {"protocol": {"export_schema_version": 6, "generated_at_ms": generated, "filters": filters.model_dump(mode="json"),
+        return {"protocol": {"export_schema_version": 7, "generated_at_ms": generated, "filters": filters.model_dump(mode="json"),
                              "manifest": self.experiment.manifest, "time_units": "milliseconds", "missing_value": "empty cell / JSON null",
                              "summary_population": "terminal trials only; actual Tcorrect includes successful trials only",
                              "training_excluded": not filters.include_practice},
-                "trials": trials, "attempts": attempts, "events": events, "interpretations": interpretations,
+                "registry": registry, "trials": trials, "attempts": attempts, "events": events, "interpretations": interpretations,
                 "m4_transcriptions": m4_transcriptions, "agent_runs": agent_runs, "summary": summarize(trials)}
 
 

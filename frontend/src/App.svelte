@@ -12,6 +12,8 @@
   import M4Workbench from './lib/components/M4Workbench.svelte';
   import M5Workbench from './lib/components/M5Workbench.svelte';
   import HelpDrawer from './lib/components/HelpDrawer.svelte';
+  import IntroDeck from './lib/components/IntroDeck.svelte';
+  import AdminValidation from './lib/components/AdminValidation.svelte';
   import { downloadUrl, initializeAccessContext, setAccessContext } from './lib/access-context';
 
   let authState = $state<'loading' | 'authorized' | 'unauthorized' | 'error'>('loading');
@@ -32,6 +34,8 @@
   let helpOpen = $state(false);
   let protocol = $state<SessionView['manifest'] | null>(null);
   let tabBlocked = $state(false);
+  let introOpen = $state(false);
+  let introSeen = $state(false);
 
   const currentSession = $derived(me?.sessions.find((session) => session.kind === selectedKind) ?? null);
   const currentTrial = $derived(currentSession?.trials.find((trial) => trial.status === 'active' || trial.status === 'pending') ?? null);
@@ -43,6 +47,7 @@
     return currentTrial?.status === 'active' && logger ? Math.ceil(logger.remainingMilliseconds() / 1000) : null;
   });
   const attemptsLeft = $derived(currentTrial ? Math.max(0, currentTrial.attempt_limit - currentTrial.attempts.length) : 0);
+  const validationMode = $derived(Boolean(me?.validation_mode));
 
   function setToast(tone: 'success' | 'error', text: string) {
     toast = { tone, text, key: Date.now() };
@@ -61,7 +66,14 @@
           api<{ manifest: SessionView['manifest'] }>('/api/protocol')
         ]);
         records = loadedRecords; manualHelp = loadedHelp; protocol = loadedProtocol.manifest;
+        if (!me.validation_mode) {
+          const key = `intro-complete:${me.access_context}`;
+          introSeen = localStorage.getItem(key) === '1';
+          introOpen = !introSeen;
+        }
         if (!me.sessions.some((session) => session.kind === selectedKind) && me.sessions.some((session) => session.kind === 'practice')) selectedKind = 'practice';
+        const completedExperiment = me.sessions.find((session) => session.kind === 'experiment' && session.complete && session.completion_code);
+        if (completedExperiment) downloadCompletionCode(completedExperiment, true);
       }
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) authState = 'unauthorized';
@@ -81,11 +93,24 @@
   }
 
   async function refreshSession(sessionId = currentSession?.id) {
-    if (!me || !sessionId) return;
+    if (!me || !sessionId) return null;
     try {
       const session = await api<SessionView>(`/api/sessions/${sessionId}`);
       me.sessions = me.sessions.map((item) => item.id === session.id ? session : item);
-    } catch (error) { setToast('error', errorMessage(error)); }
+      if (session.complete && session.kind === 'experiment') downloadCompletionCode(session, true);
+      return session;
+    } catch (error) { setToast('error', errorMessage(error)); return null; }
+  }
+
+  function downloadCompletionCode(session: SessionView, once = false) {
+    if (session.kind !== 'experiment' || !session.complete || !session.completion_code) return;
+    const marker = `completion-code-downloaded:${session.id}:${session.completion_code}`;
+    if (once && localStorage.getItem(marker) === '1') return;
+    const link = document.createElement('a');
+    link.href = downloadUrl(`/api/sessions/${session.id}/completion-code.txt`);
+    link.download = 'completion-code.txt';
+    link.click();
+    if (once) localStorage.setItem(marker, '1');
   }
 
   async function startTrial(trial: TrialView) {
@@ -114,6 +139,13 @@
     logoutOpen = false;
     try { await api('/api/access/logout', { method: 'POST' }); }
     finally { location.assign('/'); }
+  }
+
+  function completeIntro() {
+    if (!me) return;
+    localStorage.setItem(`intro-complete:${me.access_context}`, '1');
+    introSeen = true;
+    introOpen = false;
   }
 
   function formatTime(seconds: number | null) {
@@ -192,11 +224,13 @@
       <div class="download-actions"><a class="primary button-link" href={downloadUrl('/api/analytics/export.xlsx')}>Скачать Excel</a><a class="secondary button-link" href={downloadUrl('/api/analytics/export.zip')}>Скачать CSV ZIP</a></div>
       <p class="muted small">Роль: researcher · код: {me.participant_code}</p></section>
   </main>
+{:else if me?.validation_mode && manualHelp && protocol}
+  <AdminValidation participantCode={me.participant_code} {records} {manualHelp} referenceDate={protocol.protocol.reference_date} onLogout={() => { logoutOpen = true; }} />
 {:else if me}
   <main class="shell">
     <header class="topbar">
       <div><p class="eyebrow">Экспериментальный стенд</p><h1>Рабочая сессия</h1></div>
-      <div class="participant-meta"><span class="code-badge">{me.participant_code}</span><button class="secondary" data-track="help-open" onclick={() => helpOpen = true}>Как работать</button><button class="secondary" onclick={() => logoutOpen = true}>Выйти</button></div>
+      <div class="participant-meta"><span class="code-badge">{me.participant_code}</span><button class="secondary" onclick={() => introOpen = true}>Инструктаж</button><button class="secondary" data-track="help-open" onclick={() => helpOpen = true}>Как работать</button><button class="secondary" onclick={() => logoutOpen = true}>Выйти</button></div>
     </header>
 
     <nav class="session-tabs" aria-label="Тип сессии">
@@ -211,14 +245,22 @@
       <section class="start-card"><p class="eyebrow">{selectedKind === 'experiment' ? '15 проб' : 'Тренировочный режим'}</p>
         <h2>{selectedKind === 'experiment' ? 'Основная сессия ещё не начата' : 'Тренировка ещё не начата'}</h2>
         <p>{selectedKind === 'experiment' ? 'После старта порядок режимов и варианты задач фиксируются для вашего кода.' : 'Тренировочные результаты не входят в основной анализ.'}</p>
-        <button class="primary" disabled={requestBusy} onclick={() => createSession(selectedKind)}>{selectedKind === 'experiment' ? 'Создать сессию' : 'Начать тренировку'}</button>
+        {#if !introSeen}<p class="notice warning">Перед первой сессией завершите короткий визуальный инструктаж.</p><button class="primary" onclick={() => introOpen = true}>Открыть инструктаж</button>
+        {:else}<button class="primary" disabled={requestBusy} onclick={() => createSession(selectedKind)}>{selectedKind === 'experiment' ? 'Создать сессию' : 'Начать тренировку'}</button>{/if}
       </section>
     {:else}
       <LiveSearchProgress loading={requestBusy} statusText={requestBusy ? busyText : currentSession.complete ? 'Сессия завершена' : 'Прогресс сессии'}
         progress={progressPercent} detail={`Завершено ${completedTrials} из ${currentSession.trials.length} проб`} />
 
       {#if currentSession.complete}
-        <section class="complete-card"><span class="success-icon">✓</span><h2>Сессия завершена</h2><p>Все доступные пробы сохранены.</p></section>
+        <section class="complete-card"><span class="success-icon">✓</span><h2>Сессия завершена</h2><p>Все доступные пробы сохранены.</p>
+          {#if currentSession.kind === 'experiment' && currentSession.completion_code}
+            <p>Ваш проверочный код прохождения:</p>
+            <p class="completion-code"><strong>{currentSession.completion_code}</strong></p>
+            <p class="muted small">Код также записан в реестре исследователя. Сохраните TXT-файл: по этому коду можно сверить присланный результат с записью на сервере.</p>
+            <button class="primary" onclick={() => downloadCompletionCode(currentSession)}>Скачать проверочный код (.txt)</button>
+          {/if}
+        </section>
       {:else if currentTrial}
         <section class="trial-card">
           <div class="trial-heading">
@@ -263,3 +305,10 @@
     onclose={() => helpOpen = false} />
 {/if}
 {#if logoutOpen}<ConfirmDialog title="Выйти из стенда?" message="Повторно войти можно по той же персональной ссылке приглашения." confirmLabel="Выйти" onconfirm={logout} oncancel={() => logoutOpen = false} />{/if}
+
+{#if introOpen && me && !validationMode}<IntroDeck oncomplete={completeIntro} onclose={() => introOpen = false} />{/if}
+
+
+<style>
+  .completion-code { margin: 10px auto 16px; font: 800 1.7rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .16em; }
+</style>

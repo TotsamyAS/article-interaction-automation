@@ -71,6 +71,7 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
 
     app = FastAPI(title="Экспериментальный стенд — API", version="0.1.0", lifespan=lifespan)
     router = APIRouter(prefix="/api", dependencies=[Depends(require_principal), Depends(same_origin)])
+    validation_asr_cache: dict[tuple[str, str], dict] = {}
 
     @app.middleware("http")
     async def private_responses(request: Request, call_next):
@@ -100,10 +101,12 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
 
     @router.get("/me", tags=["Доступ"])
     def me(principal: Annotated[Principal, Depends(require_principal)]):
+        validation_mode = principal.role == "participant" and principal.code.lower() == "admin"
         with app.state.service.database.transaction() as connection:
-            sessions = [dict(row) for row in connection.execute(
+            sessions = [] if validation_mode else [dict(row) for row in connection.execute(
                 "SELECT id, kind FROM sessions WHERE participant_code = ? ORDER BY created_ms, id", (principal.code,))]
         return {"participant_code": principal.code, "role": principal.role, "access_context": principal.id,
+                "validation_mode": validation_mode,
                 "sessions": [app.state.service.session(row["id"]) for row in sessions]}
 
     @app.exception_handler(DomainError)
@@ -161,9 +164,118 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         return [{"id": task.id, "level": task.level, "tci": task.tci, "prompt": display_text(task.prompt), "training": task.training}
                 for task in app.state.service.catalog.values()]
 
+    @router.get("/validation/tasks", tags=["Валидация"])
+    def validation_tasks(principal: Annotated[Principal, Depends(require_principal)]):
+        if principal.role != "participant" or principal.code.lower() != "admin":
+            raise DomainError("validation_denied", "Режим валидации доступен только приглашению admin.", 403)
+        service = app.state.service
+        return [{
+            "id": task.id, "level": task.level, "tci": task.tci, "prompt": display_text(task.prompt),
+            "training": task.training, "query": task.query.model_dump(mode="json"),
+            "result": service.truth[task.id].model_dump(mode="json"),
+        } for task in service.catalog.values()]
+
+
+    def require_validation_admin(principal: Principal) -> None:
+        if principal.role != "participant" or principal.code.lower() != "admin":
+            raise DomainError("validation_denied", "Режим валидации доступен только приглашению admin.", 403)
+
+    @router.post("/validation/tasks/{task_id}/preview", response_model=QueryResult, tags=["Валидация"])
+    def validation_preview(task_id: str, body: Query, principal: Annotated[Principal, Depends(require_principal)]):
+        require_validation_admin(principal)
+        return app.state.service.validation_preview(task_id, body)
+
+    @router.post("/validation/tasks/{task_id}/attempts", response_model=AttemptView, tags=["Валидация"])
+    def validation_attempt(task_id: str, body: AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        require_validation_admin(principal)
+        return app.state.service.validation_submit(task_id, body)
+
+    @router.post("/validation/tasks/{task_id}/m3-preview", response_model=PreviewView, tags=["Валидация"])
+    def validation_m3_preview(task_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        require_validation_admin(principal)
+        return app.state.service.validation_preview_text(task_id, Mode.M3, body)
+
+    @router.post("/validation/tasks/{task_id}/m3-attempts", response_model=AttemptView, tags=["Валидация"])
+    def validation_m3_attempt(task_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        require_validation_admin(principal)
+        return app.state.service.validation_submit_text(task_id, Mode.M3, body)
+
+    @router.post("/validation/tasks/{task_id}/m4-preview", response_model=PreviewView, tags=["Валидация"])
+    def validation_m4_preview(task_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        require_validation_admin(principal)
+        return app.state.service.validation_preview_text(task_id, Mode.M4, body)
+
+    @router.post("/validation/tasks/{task_id}/m4-attempts", response_model=AttemptView, tags=["Валидация"])
+    def validation_m4_attempt(task_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        require_validation_admin(principal)
+        return app.state.service.validation_submit_text(task_id, Mode.M4, body)
+
+    @router.post("/validation/tasks/{task_id}/m5-preview", response_model=PreviewView, tags=["Валидация"])
+    def validation_m5_preview(task_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        require_validation_admin(principal)
+        return app.state.service.validation_preview_text(task_id, Mode.M5, body)
+
+    @router.post("/validation/tasks/{task_id}/m5-attempts", response_model=AttemptView, tags=["Валидация"])
+    def validation_m5_attempt(task_id: str, body: M3AttemptInput, principal: Annotated[Principal, Depends(require_principal)]):
+        require_validation_admin(principal)
+        return app.state.service.validation_submit_text(task_id, Mode.M5, body)
+
+
+    @router.post("/validation/tasks/{task_id}/m4-transcribe", response_model=M4TranscriptionView, tags=["Валидация"])
+    async def validation_m4_transcribe(
+        task_id: str, request: Request, principal: Annotated[Principal, Depends(require_principal)],
+        request_id: UUID = QueryParameter(...), duration_ms: int = QueryParameter(..., gt=0),
+    ):
+        require_validation_admin(principal)
+        service = app.state.service
+        if task_id not in service.catalog:
+            raise DomainError("validation_task_not_found", "Задание для проверки не найдено.", 404)
+        cache_key = (task_id, str(request_id))
+        cached = validation_asr_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if duration_ms > settings.asr_max_audio_seconds * 1000:
+            raise DomainError("asr_audio_too_long", f"Запись должна быть не длиннее {settings.asr_max_audio_seconds} секунд.", 413)
+        mime_type = request.headers.get("content-type", "").strip()
+        base_type = mime_type.split(";", 1)[0].lower()
+        if base_type not in {"audio/webm", "audio/ogg", "audio/mp4", "audio/x-m4a", "audio/wav", "audio/wave", "audio/x-wav"}:
+            raise DomainError("asr_audio_type", "Браузер прислал неподдерживаемый формат аудио.", 415)
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > settings.asr_max_audio_bytes:
+            raise DomainError("asr_audio_too_large", "Аудиозапись слишком большая.", 413)
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > settings.asr_max_audio_bytes:
+                raise DomainError("asr_audio_too_large", "Аудиозапись слишком большая.", 413)
+            chunks.append(chunk)
+        audio = b"".join(chunks)
+        if not audio:
+            raise DomainError("asr_audio_empty", "Браузер не записал звук. Повторите запись.", 422)
+        try:
+            result = await run_in_threadpool(app.state.asr.transcribe, audio, mime_type)
+        except ASRError as exc:
+            raise DomainError("asr_failed", str(exc), 502) from exc
+        if not result.text.strip():
+            raise DomainError("asr_no_speech", "Речь не распознана. Повторите запись ближе к микрофону.", 422)
+        response = {
+            "request_id": str(request_id),
+            "text": result.text.strip(),
+            "model": settings.asr_model,
+            "detected_language": result.detected_language,
+            "language_probability": result.language_probability,
+            "asr_ms": result.asr_ms,
+        }
+        # Only the transcript stays in RAM for idempotent admin retries; raw audio is discarded immediately.
+        validation_asr_cache[cache_key] = response
+        return response
+
     @router.post("/sessions", response_model=SessionView, tags=["Сессии"])
     def create_session(body: SessionCreate, principal: Annotated[Principal, Depends(require_principal)]):
         app.state.access.authorize_code(principal, body.participant_code)
+        if principal.role == "participant" and principal.code.lower() == "admin":
+            raise DomainError("validation_mode", "Приглашение admin предназначено только для проверки формулировок и не создаёт экспериментальные сессии.", 403)
         return app.state.service.create_session(body)
 
     @router.get("/sessions/{session_id}", response_model=SessionView, tags=["Сессии"])
@@ -295,6 +407,18 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         return Response(encode(app.state.service.export_session(session_id)), media_type="application/json",
                         headers={"Content-Disposition": 'attachment; filename="session.json"'})
 
+
+    @router.get("/sessions/{session_id}/completion-code.txt", tags=["Экспорт"])
+    def completion_code_file(session_id: str, principal: Annotated[Principal, Depends(require_principal)]):
+        app.state.access.authorize_resource(principal, "session", session_id)
+        session_view = app.state.service.session(session_id)
+        code = session_view.get("completion_code")
+        if session_view["kind"] != "experiment" or not session_view["complete"] or not code:
+            raise DomainError("completion_code_unavailable", "Проверочный код появляется после завершения основной сессии.", 409)
+        content = f"Код участника: {session_view['participant_code']}\nПроверочный код: {code}\n"
+        return Response(content, media_type="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": 'attachment; filename="completion-code.txt"'})
+
     @router.get("/sessions/{session_id}/metrics.csv", tags=["Экспорт"])
     def metrics(session_id: str, principal: Annotated[Principal, Depends(require_principal)]):
         app.state.access.authorize_resource(principal, "session", session_id)
@@ -314,7 +438,7 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         return AnalyticsService(app.state.service).collect(filters)
 
     @router.get("/analytics/{table}.csv", tags=["Аналитика"])
-    def analytics_csv(table: Literal["trials", "attempts", "events", "interpretations", "agent_runs", "summary"], filters: Annotated[AnalyticsFilter, Depends(analytics_filters)]):
+    def analytics_csv(table: Literal["registry", "trials", "attempts", "events", "interpretations", "m4_transcriptions", "agent_runs", "summary"], filters: Annotated[AnalyticsFilter, Depends(analytics_filters)]):
         snapshot = AnalyticsService(app.state.service).collect(filters)
         return Response(table_csv(snapshot, table), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{table}.csv"'})

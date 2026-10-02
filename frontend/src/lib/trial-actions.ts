@@ -2,12 +2,17 @@ import { api } from './api';
 import type { AttemptView, PreviewView, Query, TrialView } from './types';
 import type { TrialEventLogger } from './event-logger';
 
+function requestBase(trial: TrialView, validationTaskId?: string) {
+  return validationTaskId ? `/api/validation/tasks/${validationTaskId}` : `/api/trials/${trial.id}`;
+}
+
 async function submitAndRecord(trial: TrialView, payload: { query: Query } | { text: string },
-                               logger: TrialEventLogger, requestId: string, endpoint: string) {
+                               logger: TrialEventLogger, requestId: string, endpoint: string,
+                               validationTaskId?: string) {
   logger.beginSubmission(requestId, endpoint);
   let response: AttemptView;
   try {
-    response = await api<AttemptView>(`/api/trials/${trial.id}/${endpoint}`, {
+    response = await api<AttemptView>(`${requestBase(trial, validationTaskId)}/${endpoint}`, {
       method: 'POST',
       body: JSON.stringify({ request_id: requestId, ...payload })
     });
@@ -22,26 +27,26 @@ async function submitAndRecord(trial: TrialView, payload: { query: Query } | { t
   return response;
 }
 
-export async function submitTrialAttempt(trial: TrialView, query: Query, logger: TrialEventLogger, requestId: string) {
-  return submitAndRecord(trial, { query }, logger, requestId, 'attempts');
+export async function submitTrialAttempt(trial: TrialView, query: Query, logger: TrialEventLogger, requestId: string, validationTaskId?: string) {
+  return submitAndRecord(trial, { query }, logger, requestId, 'attempts', validationTaskId);
 }
 
-export async function submitM3Attempt(trial: TrialView, text: string, logger: TrialEventLogger, requestId: string) {
-  return submitAndRecord(trial, { text }, logger, requestId, 'm3-attempts');
+export async function submitM3Attempt(trial: TrialView, text: string, logger: TrialEventLogger, requestId: string, validationTaskId?: string) {
+  return submitAndRecord(trial, { text }, logger, requestId, 'm3-attempts', validationTaskId);
 }
 
-export async function submitM4Attempt(trial: TrialView, text: string, logger: TrialEventLogger, requestId: string) {
-  return submitAndRecord(trial, { text }, logger, requestId, 'm4-attempts');
+export async function submitM4Attempt(trial: TrialView, text: string, logger: TrialEventLogger, requestId: string, validationTaskId?: string) {
+  return submitAndRecord(trial, { text }, logger, requestId, 'm4-attempts', validationTaskId);
 }
 
-export async function submitM5Attempt(trial: TrialView, text: string, logger: TrialEventLogger, requestId: string) {
-  return submitAndRecord(trial, { text }, logger, requestId, 'm5-attempts');
+export async function submitM5Attempt(trial: TrialView, text: string, logger: TrialEventLogger, requestId: string, validationTaskId?: string) {
+  return submitAndRecord(trial, { text }, logger, requestId, 'm5-attempts', validationTaskId);
 }
 
-export async function previewTextRequest(trial: TrialView, text: string, logger: TrialEventLogger, requestId: string, endpoint: 'm3-preview' | 'm4-preview' | 'm5-preview') {
+export async function previewTextRequest(trial: TrialView, text: string, logger: TrialEventLogger, requestId: string, endpoint: 'm3-preview' | 'm4-preview' | 'm5-preview', validationTaskId?: string) {
   logger.requestStarted(requestId, endpoint);
   try {
-    return await api<PreviewView>(`/api/trials/${trial.id}/${endpoint}`, {
+    return await api<PreviewView>(`${requestBase(trial, validationTaskId)}/${endpoint}`, {
       method: 'POST', body: JSON.stringify({ request_id: requestId, text })
     });
   } finally {

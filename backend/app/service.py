@@ -2,6 +2,8 @@ import csv
 import io
 import json
 import logging
+import secrets
+import string
 import time
 from decimal import Decimal
 from uuid import uuid4
@@ -10,7 +12,7 @@ from .catalog import build_catalog
 from .contracts import (BASE_AVAILABLE_MODES, AttemptInput, Event, M3AttemptInput, M5AttemptInput, Mode, Query, QueryResult,
                         SessionCreate, TaskRecord)
 from .database import Database, encode
-from .engine import csv_result, execute, verify
+from .engine import execute, verify
 from .errors import DomainError
 from .metrics import active_time_ms, trial_metrics
 from .llm import LLMError, PROMPT_VERSION
@@ -33,6 +35,7 @@ class ExperimentService:
         self.m3_interpreter = None
         self.m5_agent = None
         self.available_modes = set(BASE_AVAILABLE_MODES)
+        self._validation_text_cache: dict[tuple[str, str, str], dict] = {}
         self.configure_m3(m3_interpreter)
         self.configure_m5(m5_agent)
         self.catalog = build_catalog(self.settings.reference_date)
@@ -131,11 +134,34 @@ class ExperimentService:
                 "elapsed_since_start_ms": duration,
                 "metrics": trial_metrics(trial, attempts, active, trial["trial_limit_seconds"] * 1000, trial["attempt_limit"])}
 
+    @staticmethod
+    def _new_completion_code() -> str:
+        alphabet = string.ascii_uppercase + string.digits
+        return "".join(secrets.choice(alphabet) for _ in range(10))
+
+    def _ensure_completion_code(self, connection, session: dict) -> str | None:
+        if session["kind"] != "experiment":
+            return None
+        if session.get("completion_code"):
+            return session["completion_code"]
+        # BEGIN IMMEDIATE serializes writers, so the uniqueness check and update are atomic.
+        while True:
+            code = self._new_completion_code()
+            exists = connection.execute("SELECT 1 FROM sessions WHERE completion_code = ?", (code,)).fetchone()
+            if exists:
+                continue
+            connection.execute("UPDATE sessions SET completion_code = ? WHERE id = ?", (code, session["id"]))
+            session["completion_code"] = code
+            return code
+
     def _session_view(self, connection, session):
         rows = [dict(row) for row in connection.execute("SELECT * FROM trials WHERE session_id = ? ORDER BY position", (session["id"],))]
         for trial in rows:
             self._expire(connection, trial, self.clock())
-        return {**session, "complete": all(row["status"] in ("correct", "incomplete") for row in rows),
+        complete = bool(rows) and all(row["status"] in ("correct", "incomplete") for row in rows)
+        if complete:
+            self._ensure_completion_code(connection, session)
+        return {**session, "complete": complete,
                 "manifest": self.manifest, "trials": [self._trial_view(connection, row) for row in rows]}
 
     def create_session(self, request: SessionCreate):
@@ -146,8 +172,10 @@ class ExperimentService:
                 return self._session_view(connection, dict(existing))
             sequence = connection.execute("SELECT COUNT(*) FROM sessions WHERE kind = 'experiment'").fetchone()[0] if request.kind == "experiment" else 0
             session_id = str(uuid4())
-            connection.execute("INSERT INTO sessions VALUES (?, ?, ?, ?, ?)",
-                               (session_id, request.participant_code, request.kind, sequence, self.clock()))
+            connection.execute(
+                "INSERT INTO sessions (id, participant_code, kind, sequence_no, created_ms, completion_code) VALUES (?, ?, ?, ?, ?, NULL)",
+                (session_id, request.participant_code, request.kind, sequence, self.clock()),
+            )
             position = 0
             for block in range(5):
                 mode = f"M{1 + (block + sequence) % 5}"
@@ -222,12 +250,13 @@ class ExperimentService:
             started = self.clock()
             operation_started = time.perf_counter_ns()
             result = execute(self.records, request.query)
-            content = csv_result(result, request.query) if request.query.output.format == "csv" else None
+            # CSV is a logical requirement of the Query, not a participant file download.
+            exported = request.query.output.format == "csv" and request.query.output.scope != "aggregate_only"
             definition = self.catalog[trial["task_id"]]
             correct = verify(result, self.truth[definition.id], check_aggregate=definition.level > 1,
                              average=definition.query.grouping.aggregation == "AVG",
                              tolerance=Decimal(self.settings.average_tolerance),
-                             requires_export=definition.level == 3, exported=content is not None and request.query.output.scope != "aggregate_only")
+                             requires_export=definition.level == 3, exported=exported)
             exec_ms = (time.perf_counter_ns() - operation_started) / 1_000_000
             finished = self.clock()
             ordinal = connection.execute("SELECT COUNT(*) FROM attempts WHERE trial_id = ?", (trial_id,)).fetchone()[0] + 1
@@ -243,10 +272,10 @@ class ExperimentService:
                         "correct": correct, "trial_status": trial["status"], "end_reason": trial["end_reason"],
                         "result": result.model_dump(mode="json"), "Texec_ms": exec_ms,
                         "started_ms": started, "finished_ms": finished,
-                        "export_url": f"/api/attempts/{attempt_id}/export" if content is not None else None}
+                        "export_url": None}
             connection.execute("INSERT INTO attempts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                (attempt_id, trial_id, str(request.request_id), ordinal, query_json, encode(response),
-                                int(correct), started, finished, content))
+                                int(correct), started, finished, None))
             return response
 
     @staticmethod
@@ -572,6 +601,93 @@ class ExperimentService:
                       finalize=False, query=response["query"], result=response["result"])
         return response
 
+    def _validation_definition(self, task_id: str):
+        definition = self.catalog.get(task_id)
+        if definition is None:
+            raise DomainError("validation_task_not_found", "Задание для проверки не найдено.", 404)
+        return definition
+
+    def _validation_attempt(self, task_id: str, query: Query) -> dict:
+        definition = self._validation_definition(task_id)
+        started = self.clock()
+        operation_started = time.perf_counter_ns()
+        result = execute(self.records, query)
+        exported = query.output.format == "csv" and query.output.scope != "aggregate_only"
+        correct = verify(
+            result,
+            self.truth[definition.id],
+            check_aggregate=definition.level > 1,
+            average=definition.query.grouping.aggregation == "AVG",
+            tolerance=Decimal(self.settings.average_tolerance),
+            requires_export=definition.level == 3,
+            exported=exported,
+        )
+        exec_ms = (time.perf_counter_ns() - operation_started) / 1_000_000
+        finished = self.clock()
+        return {
+            "id": f"validation-{uuid4()}",
+            "trial_id": f"validation:{task_id}",
+            "ordinal": 1,
+            "correct": correct,
+            "trial_status": "correct" if correct else "active",
+            "end_reason": "correct" if correct else None,
+            "result": result.model_dump(mode="json"),
+            "Texec_ms": exec_ms,
+            "started_ms": started,
+            "finished_ms": finished,
+            "export_url": None,
+        }
+
+    def validation_preview(self, task_id: str, query: Query):
+        self._validation_definition(task_id)
+        return execute(self.records, query)
+
+    def validation_submit(self, task_id: str, request: AttemptInput):
+        return self._validation_attempt(task_id, request.query)
+
+    def _validation_text_query(self, task_id: str, mode: Mode, request: M3AttemptInput, *, cached_only: bool) -> Query:
+        self._validation_definition(task_id)
+        request_id = str(request.request_id)
+        key = (task_id, mode.value, request_id)
+        previous = self._validation_text_cache.get(key)
+        if previous is not None:
+            if previous["text"] != request.text:
+                raise DomainError("idempotency_conflict", "request_id уже использован с другим текстом.", 409)
+            return Query.model_validate(previous["query"])
+        if cached_only:
+            raise DomainError("validation_preview_required", "Сначала получите предпросмотр этого запроса.", 409)
+
+        if mode in (Mode.M3, Mode.M4):
+            if self.m3_interpreter is None or mode not in self.available_modes:
+                raise DomainError("mode_unavailable", f"{mode.value} не настроен.", 409)
+            try:
+                query = self.m3_interpreter.interpret(request.text).query
+            except LLMError as error:
+                raise DomainError(error.code, error.message, error.status) from None
+        elif mode == Mode.M5:
+            if self.m5_agent is None or mode not in self.available_modes:
+                raise DomainError("mode_unavailable", "M5 не настроен.", 409)
+            try:
+                query = self.m5_agent.run(request.text).query
+            except AgentError as error:
+                raise DomainError(error.code, error.message, error.status) from None
+        else:
+            raise DomainError("validation_mode", "Для этого режима используется структурированный Query.", 409)
+
+        # Validate the generated Query through the same deterministic executor as participant trials.
+        execute([], query)
+        self._validation_text_cache[key] = {"text": request.text, "query": query.model_dump(mode="json")}
+        return query
+
+    def validation_preview_text(self, task_id: str, mode: Mode, request: M3AttemptInput):
+        query = self._validation_text_query(task_id, mode, request, cached_only=False)
+        return self._preview_payload(request.request_id, query)
+
+    def validation_submit_text(self, task_id: str, mode: Mode, request: M3AttemptInput):
+        # Final validation confirms exactly the cached preview; it never calls RouterAI/agent a second time.
+        query = self._validation_text_query(task_id, mode, request, cached_only=True)
+        return self._validation_attempt(task_id, query)
+
     def ingest_events(self, trial_id, events: list[Event]):
         event_views = [self._event_log_view(event) for event in events]
         self._log_task_mining("batch_received", trial_id=trial_id, count=len(events), events=event_views)
@@ -636,11 +752,8 @@ class ExperimentService:
             return {"accepted": accepted, "duplicates": duplicates}
 
     def export_attempt(self, attempt_id):
-        with self.database.transaction() as connection:
-            row = connection.execute("SELECT csv_text FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
-            if row is None or row["csv_text"] is None:
-                raise DomainError("export_not_found", "Экспорт не найден.", 404)
-            return row["csv_text"]
+        # Participant tasks may require output.format=csv for correctness, but the experiment no longer creates result files.
+        raise DomainError("export_disabled", "Файл CSV в эксперименте не создаётся; формат CSV учитывается только как часть ответа.", 410)
 
     def export_session(self, session_id):
         # A snapshot includes raw events and attempts, not only derived summaries.

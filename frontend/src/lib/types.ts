@@ -97,12 +97,14 @@ export interface SessionView {
   kind: 'experiment' | 'practice';
   sequence_no: number;
   created_ms: number;
+  completion_code: string | null;
   complete: boolean;
   manifest: { protocol: { reference_date: string; trial_limit_seconds: number; attempt_limit: number; break_seconds: number; [key: string]: unknown }; [key: string]: unknown };
   trials: TrialView[];
 }
 
-export interface MeResponse { participant_code: string; role: Role; access_context: string; sessions: SessionView[] }
+export interface MeResponse { participant_code: string; role: Role; access_context: string; validation_mode?: boolean; sessions: SessionView[] }
+export interface ValidationTask { id: string; level: number; tci: number; prompt: string; training: boolean; query: Query; result: QueryResult }
 export interface TagBuilder {
   aliases?: string[];
   label: string; kind: 'filter' | 'action'; operators: string[]; values: string[];

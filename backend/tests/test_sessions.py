@@ -107,7 +107,11 @@ def test_order_without_mandatory_break_and_required_csv(service, clock):
         response = submit(service, trial, query)
         assert response["correct"]
         if trial["level"] == 3:
-            assert service.export_attempt(response["id"]).startswith("\ufeffid,")
+            assert response["export_url"] is None
+            with pytest.raises(DomainError) as disabled:
+                service.export_attempt(response["id"])
+            assert disabled.value.code == "export_disabled"
+            assert disabled.value.status == 410
     assert service.start_trial(session["trials"][3]["id"])["status"] == "active"
 
 

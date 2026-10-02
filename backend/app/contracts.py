@@ -265,6 +265,7 @@ class SessionView(Contract):
     kind: Literal["experiment", "practice"]
     sequence_no: int
     created_ms: int
+    completion_code: str | None = None
     complete: bool
     manifest: dict
     trials: list[TrialView]

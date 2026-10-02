@@ -6,12 +6,12 @@
   import ResultsTable from './ResultsTable.svelte';
   import QueryInspector from './QueryInspector.svelte';
   import WorkbenchGuide from './WorkbenchGuide.svelte';
-  import { downloadUrl } from '../access-context';
   import { displayValue } from '../terminology';
 
-  let { trial, records, referenceDate, logger, onAttempt, onBusy }: {
+  let { trial, records, referenceDate, logger, onAttempt, onBusy, validationTaskId }: {
     trial: TrialView; records: TaskRecord[]; referenceDate: string; logger: TrialEventLogger;
     onAttempt: (attempt: AttemptView) => void; onBusy: (busy: boolean, text?: string) => void;
+    validationTaskId?: string;
   } = $props();
 
   type DraftOperator = 'eq' | 'neq' | 'gt' | 'lt' | 'gte' | 'lte' | 'is_null' | 'not_null' | 'recent' | 'overdue';
@@ -117,7 +117,8 @@
     message = ''; busy = true; onBusy(true, 'Обновляем предпросмотр…');
     try {
       const query = buildQuery();
-      const next = await logger.measure('m1-preview', () => api<QueryResult>(`/api/trials/${trial.id}/preview`, { method: 'POST', body: JSON.stringify(query) }));
+      const base = validationTaskId ? `/api/validation/tasks/${validationTaskId}` : `/api/trials/${trial.id}`;
+      const next = await logger.measure('m1-preview', () => api<QueryResult>(`${base}/preview`, { method: 'POST', body: JSON.stringify(query) }));
       await logger.flushSafely();
       result = next; previewQuery = query; previewSignature = JSON.stringify(query);
     } catch (error) { message = workbenchError(error); }
@@ -130,12 +131,9 @@
     try {
       const serialized = JSON.stringify(previewQuery);
       if (!retryId || retryQuery !== serialized) { retryId = crypto.randomUUID(); retryQuery = serialized; }
-      const attempt = await submitTrialAttempt(trial, previewQuery, logger, retryId);
+      const attempt = await submitTrialAttempt(trial, previewQuery, logger, retryId, validationTaskId);
       retryId = null; retryQuery = '';
       result = attempt.result;
-      if (attempt.export_url) {
-        const link = document.createElement('a'); link.href = downloadUrl(attempt.export_url); link.download = 'result.csv'; link.click();
-      }
       onAttempt(attempt);
     } catch (error) { message = workbenchError(error); }
     finally { busy = false; onBusy(false); }

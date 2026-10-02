@@ -7,11 +7,11 @@
   import QueryInspector from './QueryInspector.svelte';
   import ResultsTable from './ResultsTable.svelte';
   import WorkbenchGuide from './WorkbenchGuide.svelte';
-  import { downloadUrl } from '../access-context';
 
-  let { trial, help, logger, onAttempt, onBusy }: {
+  let { trial, help, logger, onAttempt, onBusy, validationTaskId }: {
     trial: TrialView; help: ManualQueryHelp; logger: TrialEventLogger;
     onAttempt: (attempt: AttemptView) => void; onBusy: (busy: boolean, text?: string) => void;
+    validationTaskId?: string;
   } = $props();
 
   let tags = $state<string[]>([]);
@@ -36,7 +36,8 @@
       const query = await logger.measure('m2-compile', () => api<Query>('/api/manual-query/compile', {
         method: 'POST', body: JSON.stringify({ tags })
       }));
-      const next = await logger.measure('m2-preview', () => api<QueryResult>(`/api/trials/${trial.id}/preview`, {
+      const base = validationTaskId ? `/api/validation/tasks/${validationTaskId}` : `/api/trials/${trial.id}`;
+      const next = await logger.measure('m2-preview', () => api<QueryResult>(`${base}/preview`, {
         method: 'POST', body: JSON.stringify(query)
       }));
       await logger.flushSafely();
@@ -52,12 +53,9 @@
     try {
       const serialized = JSON.stringify(previewQuery);
       if (!retryId || retryQuery !== serialized) { retryId = crypto.randomUUID(); retryQuery = serialized; }
-      const attempt = await submitTrialAttempt(trial, previewQuery, logger, retryId);
+      const attempt = await submitTrialAttempt(trial, previewQuery, logger, retryId, validationTaskId);
       retryId = null; retryQuery = '';
       result = attempt.result;
-      if (attempt.export_url) {
-        const link = document.createElement('a'); link.href = downloadUrl(attempt.export_url); link.download = 'result.csv'; link.click();
-      }
       onAttempt(attempt);
     } catch (error) { message = workbenchError(error); }
     finally { busy = false; onBusy(false); }

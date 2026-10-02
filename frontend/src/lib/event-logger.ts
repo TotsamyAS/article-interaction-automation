@@ -45,7 +45,8 @@ export class TrialEventLogger {
 
   constructor(private trial: TrialView, private onWarning: (message: string) => void = () => undefined,
               private monotonicNow: () => number = () => performance.now(),
-              private onTerminal: () => void = () => undefined) {
+              private onTerminal: () => void = () => undefined,
+              private enabled = true) {
     this.sequence = trial.next_event_sequence;
     this.lastOffset = trial.last_event_offset_ms;
     this.anchorOffset = Math.max(this.lastOffset, trial.elapsed_since_start_ms);
@@ -55,6 +56,7 @@ export class TrialEventLogger {
   }
 
   start() {
+    if (!this.enabled) return;
     const onClick = (event: MouseEvent) => this.input('click', event.target, { x: event.clientX, y: event.clientY });
     const onChange = (event: Event) => this.input('change', event.target);
     const onKey = (event: KeyboardEvent) => this.input('keydown', event.target, { key: event.key.slice(0, 32) });
@@ -110,7 +112,7 @@ export class TrialEventLogger {
   remainingMilliseconds() { return Math.max(0, this.durationLimit - this.offset()); }
 
   private push(kind: EventKind, target: string, details: Partial<ClientEvent> = {}, forcedOffset?: number) {
-    if (this.closed) return;
+    if (!this.enabled || this.closed) return;
     const offset = Math.min(this.durationLimit, Math.max(this.lastOffset, forcedOffset ?? this.offset()));
     this.lastOffset = offset;
     this.buffer.push({ event_id: crypto.randomUUID(), sequence: this.sequence++, offset_ms: offset, kind, target, ...details });
@@ -186,7 +188,7 @@ export class TrialEventLogger {
   }
 
   async flush() {
-    if (this.submissionPending) return;
+    if (!this.enabled || this.submissionPending) return;
     if (this.flushPromise) {
       await this.flushPromise;
       if (this.buffer.length) await this.flush();

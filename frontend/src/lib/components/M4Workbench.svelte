@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { downloadUrl } from '../access-context';
   import { api, ApiError, errorMessage, workbenchError } from '../api';
   import { previewTextRequest, submitM4Attempt } from '../trial-actions';
   import type { AttemptView, M4TranscriptionView, Query, QueryResult, TrialView } from '../types';
@@ -8,9 +7,10 @@
   import QueryInspector from './QueryInspector.svelte';
   import ResultsTable from './ResultsTable.svelte';
 
-  let { trial, logger, onAttempt, onBusy }: {
+  let { trial, logger, onAttempt, onBusy, validationTaskId }: {
     trial: TrialView; logger: TrialEventLogger;
     onAttempt: (attempt: AttemptView) => void; onBusy: (busy: boolean, text?: string) => void;
+    validationTaskId?: string;
   } = $props();
 
   const MAX_RECORDING_MS = 20_000;
@@ -83,11 +83,12 @@
     const durationMs = Math.max(1, Math.min(MAX_RECORDING_MS, Math.round(performance.now() - recordingStartedAt)));
     const asrRequestId = crypto.randomUUID();
     busy = true;
-    onBusy(true, 'GigaAM-v3 распознаёт речь на сервере…');
+    onBusy(true, 'RouterAI распознаёт речь…');
     logger.requestStarted(asrRequestId, 'm4-transcribe');
     try {
       const params = new URLSearchParams({ request_id: asrRequestId, duration_ms: String(durationMs) });
-      const recognized = await api<M4TranscriptionView>(`/api/trials/${trial.id}/m4-transcribe?${params}`, {
+      const base = validationTaskId ? `/api/validation/tasks/${validationTaskId}` : `/api/trials/${trial.id}`;
+      const recognized = await api<M4TranscriptionView>(`${base}/m4-transcribe?${params}`, {
         method: 'POST',
         headers: { 'Content-Type': mimeType },
         body: blob
@@ -163,7 +164,7 @@
     if (!requestId || requestText !== value) { requestId = crypto.randomUUID(); requestText = value; }
     busy = true; onBusy(true, 'RouterAI интерпретирует распознанную речь для предпросмотра…');
     try {
-      const next = await previewTextRequest(trial, value, logger, requestId, 'm4-preview');
+      const next = await previewTextRequest(trial, value, logger, requestId, 'm4-preview', validationTaskId);
       previewQuery = next.query; result = next.result; previewText = value;
     } catch (error) {
       message = workbenchError(error);
@@ -176,9 +177,8 @@
     if (!previewCurrent || !requestId) { message = 'Сначала получите актуальный предпросмотр распознанной фразы. Итоговая кнопка засчитывает именно его без повторного вызова RouterAI.'; return; }
     busy = true; onBusy(true, 'Фиксируем показанный предпросмотр как итоговый ответ…');
     try {
-      const attempt = await submitM4Attempt(trial, previewText, logger, requestId);
+      const attempt = await submitM4Attempt(trial, previewText, logger, requestId, validationTaskId);
       result = attempt.result;
-      if (attempt.export_url) { const link = document.createElement('a'); link.href = downloadUrl(attempt.export_url); link.download = 'result.csv'; link.click(); }
       onAttempt(attempt);
     } catch (error) { message = workbenchError(error); }
     finally { busy = false; onBusy(false); }
@@ -198,14 +198,14 @@
 
 <div class="workbench" data-track="m4-workbench">
   <div class="workbench-heading"><div><span class="mode-pill">M4 · Speech</span><h2>Голосовая формулировка</h2></div></div>
-  <p class="instruction">Произнесите цель, остановите запись и дождитесь расшифровки. Аудио обрабатывается локальной GigaAM-v3 на сервере стенда; VPN и Web Speech API не используются. Проверьте распознанный текст, затем откройте предпросмотр RouterAI.</p>
+  <p class="instruction">Произнесите цель, остановите запись и дождитесь расшифровки. Аудио отправляется сервером стенда в RouterAI для распознавания речи; VPN и Web Speech API в браузере не используются. Проверьте распознанный текст, затем откройте предпросмотр RouterAI.</p>
   {#if !mediaSupported}<p class="notice warning" role="alert">В этом браузере нет MediaRecorder или доступа к микрофону. Для M4 используйте актуальный Chrome, Edge или Firefox.</p>{/if}
   <div class="primary-actions">
     {#if listening}<button type="button" class="secondary" data-track="m4-stop" onclick={stopSpeech}>Остановить запись</button>
     {:else}<button type="button" class="secondary" data-track="m4-record" disabled={!mediaSupported || busy} onclick={startSpeech}>{transcript ? 'Записать заново' : 'Начать запись'}</button>{/if}
   </div>
   <p class="muted small">Максимальная длительность одной записи — 20 секунд. Аудиофайл после распознавания не сохраняется.</p>
-  <textarea data-track="m4-transcript" rows="4" readonly aria-label="Распознанный текст" placeholder="Здесь появится расшифровка GigaAM-v3" value={transcript}></textarea>
+  <textarea data-track="m4-transcript" rows="4" readonly aria-label="Распознанный текст" placeholder="Здесь появится расшифровка RouterAI" value={transcript}></textarea>
   {#if message}<p class="notice error" role="alert"><strong>Не удалось выполнить действие.</strong> {message}</p>{/if}
   {#if previewQuery && !previewCurrent}<p class="notice warning">Распознанный текст изменился после предпросмотра. Обновите предпросмотр перед итоговой отправкой.</p>{/if}
   <div class="preview-actions">
