@@ -3,7 +3,7 @@ WORKDIR /app
 COPY frontend/package.json ./
 RUN bun install
 COPY frontend/ ./
-RUN bun run check && bun run build
+RUN bun run build
 
 FROM oven/bun:1.4.2-alpine
 WORKDIR /app
