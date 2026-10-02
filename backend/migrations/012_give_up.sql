@@ -1,0 +1,1 @@
+ALTER TABLE trials ADD COLUMN gave_up INTEGER NOT NULL DEFAULT 0 CHECK (gave_up IN (0, 1));

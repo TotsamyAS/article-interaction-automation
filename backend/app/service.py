@@ -21,6 +21,7 @@ from .terminology import WORDING_VERSION, display_text
 
 
 LOGGER = logging.getLogger("uvicorn.error")
+GIVE_UP_UNIQUE_ATTEMPTS = 3
 
 
 def now_ms() -> int:
@@ -112,6 +113,37 @@ class ExperimentService:
                            (status, reason, ended, trial["id"]))
         trial.update(status=status, end_reason=reason, ended_ms=ended)
 
+    @staticmethod
+    def _normalize_attempt_text(value: str) -> str:
+        return " ".join(value.casefold().split())
+
+    def _unique_attempt_count(self, connection, trial: dict) -> int:
+        attempts = connection.execute(
+            "SELECT request_id, query_json FROM attempts WHERE trial_id = ? ORDER BY ordinal",
+            (trial["id"],),
+        ).fetchall()
+        if not attempts:
+            return 0
+        mode = Mode(trial["mode"])
+        if mode in (Mode.M1, Mode.M2):
+            return len({row["query_json"] for row in attempts})
+        source = "m5_agent_runs" if mode == Mode.M5 else "m3_interpretations"
+        text_by_request = {
+            row["request_id"]: row["user_text"]
+            for row in connection.execute(
+                f"SELECT request_id, user_text FROM {source} WHERE trial_id = ?",
+                (trial["id"],),
+            )
+        }
+        unique_inputs: set[str] = set()
+        for row in attempts:
+            text = text_by_request.get(row["request_id"])
+            if text is None:
+                unique_inputs.add(f"query:{row['query_json']}")
+            else:
+                unique_inputs.add(f"text:{self._normalize_attempt_text(text)}")
+        return len(unique_inputs)
+
     def _trial_view(self, connection, trial):
         attempts = [dict(row) for row in connection.execute(
             "SELECT id, ordinal, correct, started_ms, finished_ms FROM attempts WHERE trial_id = ? ORDER BY ordinal", (trial["id"],))]
@@ -124,11 +156,15 @@ class ExperimentService:
         active = active_time_ms(events, duration, self.settings.idle_threshold_ms)
         definition = self.catalog[trial["task_id"]]
         prompt = display_text(definition.prompt) if trial['wording_version'] == WORDING_VERSION else definition.prompt
-        return {**trial, "prompt": prompt if trial["status"] != "pending" else None,
+        unique_attempts = self._unique_attempt_count(connection, trial)
+        return {**trial, "gave_up": bool(trial.get("gave_up", 0)),
+                "prompt": prompt if trial["status"] != "pending" else None,
                 "tci": definition.tci, "level": definition.level,
                 "mode_available": Mode(trial["mode"]) in self.available_modes,
                 "deadline_ms": trial["started_ms"] + trial["trial_limit_seconds"] * 1000 if trial["started_ms"] is not None else None,
                 "attempts": attempts,
+                "unique_attempts": unique_attempts,
+                "give_up_available": trial["status"] == "active" and unique_attempts >= GIVE_UP_UNIQUE_ATTEMPTS,
                 "next_event_sequence": next_event_sequence,
                 "last_event_offset_ms": last_event_offset_ms,
                 "elapsed_since_start_ms": duration,
@@ -215,6 +251,26 @@ class ExperimentService:
                     raise DomainError("trial_order", "Сначала завершите предыдущую пробу.", 409)
             connection.execute("UPDATE trials SET status = 'active', started_ms = ? WHERE id = ?", (self.clock(), trial_id))
             return self._trial_view(connection, self._trial(connection, trial_id))
+
+    def give_up(self, trial_id: str):
+        with self.database.transaction() as connection:
+            trial = self._trial(connection, trial_id)
+            self._expire(connection, trial, self.clock())
+            if trial["status"] != "active":
+                raise DomainError("trial_not_active", "Проба не активна или её время истекло.", 409)
+            unique_attempts = self._unique_attempt_count(connection, trial)
+            if unique_attempts < GIVE_UP_UNIQUE_ATTEMPTS:
+                remaining = GIVE_UP_UNIQUE_ATTEMPTS - unique_attempts
+                raise DomainError(
+                    "give_up_locked",
+                    f"Сдаться можно после трёх различных по входу попыток. Осталось: {remaining}.",
+                    409,
+                )
+            ended = self.clock()
+            connection.execute("UPDATE trials SET gave_up = 1 WHERE id = ?", (trial_id,))
+            trial["gave_up"] = 1
+            self._finish(connection, trial, "incomplete", "attempt_limit", ended)
+            return self._trial_view(connection, trial)
 
     def preview(self, trial_id, query: Query):
         """Execute a reversible preview for the manual modes without creating an attempt."""
@@ -384,10 +440,10 @@ class ExperimentService:
                     raise DomainError("mode_unavailable", f"{mode.value} не настроен.", 409)
                 changed_config = connection.execute(
                     "SELECT 1 FROM m3_interpretations "
-                    "WHERE requested_model != ? OR prompt_version != ? "
+                    "WHERE prompt_version != ? "
                     "OR (prompt_sha256 IS NOT NULL AND prompt_sha256 != ?) "
                     "OR (temperature IS NOT NULL AND temperature != ?) LIMIT 1",
-                    (self.m3_interpreter.model, PROMPT_VERSION, self.m3_interpreter.prompt_sha256, self.m3_interpreter.temperature),
+                    (PROMPT_VERSION, self.m3_interpreter.prompt_sha256, self.m3_interpreter.temperature),
                 ).fetchone()
                 if changed_config:
                     raise DomainError(
@@ -524,9 +580,9 @@ class ExperimentService:
                 if Mode.M5 not in self.available_modes or self.m5_agent is None:
                     raise DomainError("mode_unavailable", "M5 не настроен.", 409)
                 changed_config = connection.execute(
-                    "SELECT 1 FROM m5_agent_runs WHERE requested_model != ? OR prompt_version != ? OR prompt_sha256 != ? "
+                    "SELECT 1 FROM m5_agent_runs WHERE prompt_version != ? OR prompt_sha256 != ? "
                     "OR temperature != ? OR max_steps != ? LIMIT 1",
-                    (self.m5_agent.model, AGENT_PROMPT_VERSION, self.m5_agent.prompt_sha256, self.m5_agent.temperature, self.m5_agent.max_steps),
+                    (AGENT_PROMPT_VERSION, self.m5_agent.prompt_sha256, self.m5_agent.temperature, self.m5_agent.max_steps),
                 ).fetchone()
                 if changed_config:
                     raise DomainError("m5_protocol_changed", "Конфигурация M5 изменилась после начала сбора данных. Используйте отдельный том для нового эксперимента.", 409)
@@ -784,12 +840,12 @@ class ExperimentService:
         session = self.session(session_id)
         stream = io.StringIO(newline="")
         writer = csv.writer(stream)
-        writer.writerow(["participant", "kind", "trial_id", "mode", "task", "status", "reason", "trial_limit_seconds", "attempt_limit", "wording_version",
+        writer.writerow(["participant", "kind", "trial_id", "mode", "task", "status", "reason", "gave_up", "trial_limit_seconds", "attempt_limit", "wording_version",
                          "elapsed_ms", "Tcorrect_actual_ms", "Tfirst_ms", "Tuser_active_ms", "A1_actual", "attempts", "Nretry_actual",
                          "Tcorrect_analysis_ms", "A1_analysis", "Nretry_analysis"])
         for trial in session["trials"]:
             actual, analysis = trial["metrics"]["actual"], trial["metrics"]["analysis"]
-            writer.writerow([session["participant_code"], session["kind"], trial["id"], trial["mode"], trial["task_id"], trial["status"], trial["end_reason"],
+            writer.writerow([session["participant_code"], session["kind"], trial["id"], trial["mode"], trial["task_id"], trial["status"], trial["end_reason"], trial["gave_up"],
                              trial['trial_limit_seconds'], trial['attempt_limit'], trial['wording_version'],
                              actual["elapsed_ms"], actual["Tcorrect_ms"], actual["Tfirst_ms"], actual["Tuser_active_ms"], actual["A1"], actual["attempts"], actual["Nretry"],
                              analysis["Tcorrect_ms"], analysis["A1"], analysis["Nretry"]])

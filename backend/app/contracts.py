@@ -253,6 +253,9 @@ class TrialView(Contract):
     mode_available: bool
     deadline_ms: int | None
     attempts: list[AttemptSummary]
+    unique_attempts: int
+    give_up_available: bool
+    gave_up: bool
     next_event_sequence: int
     last_event_offset_ms: int
     elapsed_since_start_ms: int

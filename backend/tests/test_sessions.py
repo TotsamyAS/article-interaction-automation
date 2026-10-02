@@ -31,6 +31,43 @@ def test_schedule_balanced_without_variant_repeats(service):
         assert len({t["task_id"] for t in rows}) == 15
 
 
+def test_give_up_requires_three_distinct_inputs_and_persists_reason(service):
+    _, trial = first_trial(service)
+    duplicate = Query(filters=[{"field": "estimate_hours", "operator": "gt", "value": 100}])
+    submit(service, trial, duplicate)
+    submit(service, trial, duplicate)
+    submit(service, trial, duplicate)
+    view = service.trial(trial["id"])
+    assert view["unique_attempts"] == 1
+    assert view["give_up_available"] is False
+    with pytest.raises(DomainError) as locked:
+        service.give_up(trial["id"])
+    assert locked.value.code == "give_up_locked"
+
+    submit(service, trial, Query(filters=[{"field": "estimate_hours", "operator": "gt", "value": 101}]))
+    assert service.trial(trial["id"])["unique_attempts"] == 2
+    submit(service, trial, Query(filters=[{"field": "estimate_hours", "operator": "gt", "value": 102}]))
+    ready = service.trial(trial["id"])
+    assert ready["unique_attempts"] == 3
+    assert ready["give_up_available"] is True
+
+    finished = service.give_up(trial["id"])
+    assert finished["status"] == "incomplete"
+    assert finished["gave_up"] is True
+    assert finished["give_up_available"] is False
+
+
+def test_asr_model_can_change_in_existing_volume_and_is_recorded(service, settings):
+    changed = settings.model_copy(update={"asr_model": "qwen/qwen3-asr-0.6b"})
+    Database(changed).initialize()
+    restarted = ExperimentService(Database(changed))
+    assert restarted.manifest["m4_asr"]["model"] == "qwen/qwen3-asr-0.6b"
+    changes = [row for row in restarted.manifest["protocol_changes"] if row["setting"] == "m4_asr_model"]
+    assert len(changes) == 1
+    assert changes[0]["previous_value"] == settings.asr_model
+    assert changes[0]["new_value"] == "qwen/qwen3-asr-0.6b"
+
+
 def test_attempt_limit_keeps_facts_and_penalty_separate(service, clock):
     _, trial = first_trial(service)
     for _ in range(25):

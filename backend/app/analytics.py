@@ -24,7 +24,7 @@ class AnalyticsFilter(Contract):
 TABLE_COLUMNS = {
     "registry": ["participant_code", "session_id", "sequence_no", "created_ms", "complete", "completion_code", "trials", "correct", "incomplete"],
     "trials": ["session_id", "participant_code", "kind", "sequence_no", "trial_id", "position", "block_index", "mode", "task_id", "level", "tci",
-               "status", "end_reason", "trial_limit_seconds", "attempt_limit", "wording_version", "started_ms", "ended_ms", "elapsed_ms", "Tcorrect_actual_ms", "Tfirst_ms", "Tuser_active_ms",
+               "status", "end_reason", "gave_up", "trial_limit_seconds", "attempt_limit", "wording_version", "started_ms", "ended_ms", "elapsed_ms", "Tcorrect_actual_ms", "Tfirst_ms", "Tuser_active_ms",
                "A1_actual", "attempts", "Nretry_actual", "Tcorrect_analysis_ms", "A1_analysis", "Nretry_analysis", "incomplete"],
     "attempts": ["session_id", "participant_code", "kind", "trial_id", "mode", "task_id", "level", "attempt_id", "ordinal", "correct",
                  "started_ms", "finished_ms", "Texec_ms", "query", "record_ids", "aggregate", "selected_groups", "export_url"],
@@ -88,7 +88,7 @@ class AnalyticsService:
                     selected[trial["id"]] = common
                     actual, analysis = trial["metrics"]["actual"], trial["metrics"]["analysis"]
                     trials.append({**common, "sequence_no": session["sequence_no"], "position": trial["position"], "block_index": trial["block_index"],
-                                   "tci": trial["tci"], "status": trial["status"], "end_reason": trial["end_reason"],
+                                   "tci": trial["tci"], "status": trial["status"], "end_reason": trial["end_reason"], "gave_up": trial["gave_up"],
                                    "trial_limit_seconds": trial["trial_limit_seconds"], "attempt_limit": trial["attempt_limit"], "wording_version": trial['wording_version'],
                                    "started_ms": trial["started_ms"], "ended_ms": trial["ended_ms"],
                                    "elapsed_ms": actual["elapsed_ms"], "Tcorrect_actual_ms": actual["Tcorrect_ms"], "Tfirst_ms": actual["Tfirst_ms"],

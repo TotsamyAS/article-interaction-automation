@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { api, ApiError, errorMessage, workbenchError } from '../api';
-  import { previewTextRequest, submitM4Attempt } from '../trial-actions';
+  import { previewTextRequest, reuseTaskPromptAttempt, submitM4Attempt } from '../trial-actions';
   import type { AttemptView, M4TranscriptionView, Query, QueryResult, TrialView } from '../types';
   import type { TrialEventLogger } from '../event-logger';
   import QueryInspector from './QueryInspector.svelte';
@@ -172,6 +172,18 @@
     } finally { busy = false; onBusy(false); }
   }
 
+  async function reuseCurrentPrompt() {
+    message = '';
+    busy = true; onBusy(true, 'Переиспользуем текст задания как запрос и сразу засчитываем попытку…');
+    try {
+      const attempt = await reuseTaskPromptAttempt(trial, logger, 'M4', validationTaskId);
+      result = attempt.result;
+      previewQuery = null;
+      onAttempt(attempt);
+    } catch (error) { message = workbenchError(error); }
+    finally { busy = false; onBusy(false); }
+  }
+
   async function submit() {
     message = '';
     if (!previewCurrent || !requestId) { message = 'Сначала получите актуальный предпросмотр распознанной фразы. Итоговая кнопка засчитывает именно его без повторного вызова RouterAI.'; return; }
@@ -208,6 +220,10 @@
   <textarea data-track="m4-transcript" rows="4" readonly aria-label="Распознанный текст" placeholder="Здесь появится расшифровка RouterAI" value={transcript}></textarea>
   {#if message}<p class="notice error" role="alert"><strong>Не удалось выполнить действие.</strong> {message}</p>{/if}
   {#if previewQuery && !previewCurrent}<p class="notice warning">Распознанный текст изменился после предпросмотра. Обновите предпросмотр перед итоговой отправкой.</p>{/if}
+  <div class="preview-actions reuse-prompt-actions">
+    <button type="button" class="secondary" data-track="m4-reuse-prompt" disabled={busy} onclick={reuseCurrentPrompt}>Переиспользовать текущий промпт</button>
+    <span class="muted small">Сразу засчитывается как попытка. Повтор того же текста не увеличивает счётчик разных попыток.</span>
+  </div>
   <div class="preview-actions">
     <button type="button" class="secondary" data-track="m4-preview" disabled={busy || listening || !transcript.trim()} onclick={preview}>{result ? 'Обновить предпросмотр' : 'Показать предпросмотр'}</button>
     <button type="button" class="primary" data-track="m4-submit" disabled={busy || listening || !previewCurrent} onclick={submit}>Отправить итоговый ответ</button>

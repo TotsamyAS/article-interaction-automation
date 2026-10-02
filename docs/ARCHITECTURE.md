@@ -97,7 +97,7 @@ M3 не получает отдельного вычислителя. Endpoints 
 
 Prompt оптимизирован под маленькую модель: в нём нет общего «поговори с пользователем», а есть роль компилятора, фактические категориальные значения набора, фиксированная D0, канонические правила для `in`, относительных дат, NULL, labels, COUNT/SUM/AVG, группировки/экстремума/экспорта и несколько синтетических few-shot примеров. Экспериментальные тексты C1a–C3e и их эталонные ответы в prompt не включаются. Strict JSON Schema строится из `Query.model_json_schema()`, дополнительно запрещает неизвестные поля и требует все свойства.
 
-Конфигурация по умолчанию: RouterAI `https://routerai.ru/api/v1`, `google/gemma-4-26b-a4b-it`, `temperature=0`, `seed=0` в запросе. Используется OpenAI-compatible strict `json_schema`; журнал сохраняет фактическую модель и provider, когда RouterAI его возвращает. Prompt имеет собственную версию и SHA-256 в protocol manifest, поэтому изменение prompt/LLM-настроек требует нового экспериментального тома так же, как изменение набора данных.
+Конфигурация по умолчанию: RouterAI `https://routerai.ru/api/v1`, `deepseek/deepseek-v4.1-flash`, `temperature=0`, `seed=0` в запросе. Используется OpenAI-compatible strict `json_schema`; журнал сохраняет фактическую модель и provider, когда RouterAI его возвращает. Prompt имеет собственную версию и SHA-256 в protocol manifest, поэтому изменение prompt/temperature по-прежнему требует нового экспериментального тома. Идентификатор LLM-модели разрешено менять: фактическая модель сохраняется в каждой LLM-записи; смена ASR model id также разрешена и фиксируется в `protocol_changes`.
 
 `m3_interpretations` хранит M3/M4 текст, raw response, валидированный Query, модель/provider/fingerprint, `Tllm`, token usage и класс ошибки. Ошибка сети/провайдера, невалидный structured output или структурно несовместимый Query не создают `attempt`; валидный и исполнимый Query всегда проходит полный executor и уже затем считается корректным/некорректным как обычная попытка. Идемпотентность `request_id` не вызывает LLM повторно при сетевом повторе известного запроса.
 
@@ -107,7 +107,7 @@ Prompt оптимизирован под маленькую модель: в н�
 
 ## M5: агентное выполнение
 
-`RouterAIAgent` повторяет benchmark protocol: `google/gemma-4-26b-a4b-it`, `temperature=0`, до 12 LLM-шагов, tools `search_tasks`, `filter_by_field`, `group_by`, `aggregate`, `find_extremum`, `sort`, `export_result`. Возвращённые tool calls выполняются последовательно. Текущее состояние компилируется в общий `Query`; конечная попытка проходит `ExperimentService.submit`, поэтому ground-truth verifier, лимиты попыток и CSV не дублируются.
+`RouterAIAgent` повторяет benchmark protocol: `deepseek/deepseek-v4.1-flash`, `temperature=0`, до 12 LLM-шагов, tools `search_tasks`, `filter_by_field`, `group_by`, `aggregate`, `find_extremum`, `sort`, `export_result`. Возвращённые tool calls выполняются последовательно. Текущее состояние компилируется в общий `Query`; конечная попытка проходит `ExperimentService.submit`, поэтому ground-truth verifier, лимиты попыток и CSV не дублируются.
 
 `m5_agent_runs` хранит user text, protocol/prompt metadata, финальный Query, observable trajectory, latency/token/provider/model данные и termination/error. Это журнал системы. Browser Task Mining продолжает независимо хранить действия пользователя и request wait. Пятиповторный benchmark дал 73/75 = 97,33%; это engineering validation, а не экспериментальная метрика участника.
 

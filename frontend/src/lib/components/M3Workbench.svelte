@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ApiError, workbenchError } from '../api';
-  import { previewTextRequest, submitM3Attempt } from '../trial-actions';
+  import { previewTextRequest, reuseTaskPromptAttempt, submitM3Attempt } from '../trial-actions';
   import type { AttemptView, Query, QueryResult, TrialView } from '../types';
   import type { TrialEventLogger } from '../event-logger';
   import QueryInspector from './QueryInspector.svelte';
@@ -37,6 +37,18 @@
     } finally { busy = false; onBusy(false); }
   }
 
+  async function reuseCurrentPrompt() {
+    message = '';
+    busy = true; onBusy(true, 'Переиспользуем текст задания как запрос и сразу засчитываем попытку…');
+    try {
+      const attempt = await reuseTaskPromptAttempt(trial, logger, 'M3', validationTaskId);
+      result = attempt.result;
+      previewQuery = null;
+      onAttempt(attempt);
+    } catch (error) { message = workbenchError(error); }
+    finally { busy = false; onBusy(false); }
+  }
+
   async function submit() {
     message = '';
     if (!previewCurrent || !requestId) { message = 'Сначала получите актуальный предпросмотр. Итоговая кнопка засчитывает именно показанный результат и не запускает RouterAI повторно.'; return; }
@@ -56,6 +68,10 @@
   <textarea data-track="m3-text" rows="5" maxlength="2000" aria-label="Текст запроса" placeholder="Например: отфильтруйте задачи, сгруппируйте их, посчитайте нужный итог и при необходимости выберите максимум/минимум и экспорт" bind:value={text}></textarea>
   {#if message}<p class="notice error" role="alert"><strong>Не удалось выполнить действие.</strong> {message}</p>{/if}
   {#if previewQuery && !previewCurrent}<p class="notice warning">Текст изменён после предпросмотра. Нижняя таблица относится к предыдущей формулировке — обновите предпросмотр.</p>{/if}
+  <div class="preview-actions reuse-prompt-actions">
+    <button type="button" class="secondary" data-track="m3-reuse-prompt" disabled={busy} onclick={reuseCurrentPrompt}>Переиспользовать текущий промпт</button>
+    <span class="muted small">Сразу засчитывается как попытка. Повтор того же текста не увеличивает счётчик разных попыток.</span>
+  </div>
   <div class="preview-actions">
     <button type="button" class="secondary" data-track="m3-preview" disabled={busy || !text.trim()} onclick={preview}>{result ? 'Обновить предпросмотр' : 'Показать предпросмотр'}</button>
     <button type="button" class="primary" data-track="m3-submit" disabled={busy || !previewCurrent} onclick={submit}>Отправить итоговый ответ</button>

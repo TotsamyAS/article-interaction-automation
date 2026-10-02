@@ -101,9 +101,26 @@ class Database:
                         legacy_protocol.pop(key, None)
                     existing_manifest["protocol"] = legacy_protocol
                 existing_manifest.pop("m3_prompt_sha256", None)
+                asr_model_change: tuple[str, str] | None = None
+                existing_asr = existing_manifest.get("m4_asr")
+                current_asr = manifest.get("m4_asr")
+                if isinstance(existing_asr, dict) and isinstance(current_asr, dict):
+                    previous_model = existing_asr.get("model")
+                    next_model = current_asr.get("model")
+                    comparable_existing = {key: value for key, value in existing_asr.items() if key != "model"}
+                    comparable_current = {key: value for key, value in current_asr.items() if key != "model"}
+                    if comparable_existing == comparable_current and previous_model != next_model:
+                        asr_model_change = (str(previous_model), str(next_model))
+                        existing_manifest["m4_asr"] = current_asr
                 if (existing_manifest != manifest or existing["records"] != serialized_records
                         or existing["ground_truth"] != encode(truth)):
                     raise RuntimeError("Конфигурация, данные или эталоны не совпадают с сохранённым протоколом. Используйте отдельный том для нового эксперимента.")
+                if asr_model_change is not None:
+                    connection.execute(
+                        "INSERT INTO protocol_changes (changed_at_ms, setting, previous_value, new_value, reason) "
+                        "VALUES (CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER), 'm4_asr_model', ?, ?, ?)",
+                        (*asr_model_change, "ASR model id changed in config; per-request requested_model keeps the cutover observable"),
+                    )
                 if existing["manifest"] != encode(manifest):
                     connection.execute("UPDATE dataset SET manifest = ? WHERE singleton = 1", (encode(manifest),))
             else:

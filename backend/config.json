@@ -14,7 +14,7 @@
   "login_redirect_path": "/",
   "access_cookie_seconds": 43200,
   "llm_base_url": "https://routerai.ru/api/v1",
-  "llm_model": "google/gemma-4-26b-a4b-it",
+  "llm_model": "deepseek/deepseek-v4.1-flash",
   "llm_temperature": 0.0,
   "llm_timeout_seconds": 60,
   "m5_max_llm_steps": 12,

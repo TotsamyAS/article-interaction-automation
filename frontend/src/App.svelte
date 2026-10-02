@@ -48,6 +48,7 @@
     return currentTrial?.status === 'active' && logger ? Math.ceil(logger.remainingMilliseconds() / 1000) : null;
   });
   const attemptsLeft = $derived(currentTrial ? Math.max(0, currentTrial.attempt_limit - currentTrial.attempts.length) : 0);
+  const giveUpRemaining = $derived(currentTrial ? Math.max(0, 3 - currentTrial.unique_attempts) : 3);
   const validationMode = $derived(Boolean(me?.validation_mode));
 
   function setToast(tone: 'success' | 'error', text: string) {
@@ -123,6 +124,21 @@
         if (me) me.sessions = me.sessions.map((item) => item.id === updated.id ? updated : item);
       }
       logger?.navigation(`trial:${started.id}:start`);
+    } catch (error) { setToast('error', errorMessage(error)); }
+    finally { requestBusy = false; busyText = ''; }
+  }
+
+  async function giveUp() {
+    if (!currentTrial || !currentTrial.give_up_available || requestBusy) return;
+    requestBusy = true; busyText = 'Завершаем пробу без ответа…';
+    try {
+      const surrendered = await api<TrialView>(`/api/trials/${currentTrial.id}/give-up`, { method: 'POST' });
+      if (currentSession && me) {
+        const updated = { ...currentSession, trials: currentSession.trials.map((item) => item.id === surrendered.id ? surrendered : item) };
+        me.sessions = me.sessions.map((item) => item.id === updated.id ? updated : item);
+      }
+      setToast('success', 'Проба завершена: участник сдался после трёх разных попыток.');
+      await refreshSession(surrendered.session_id);
     } catch (error) { setToast('error', errorMessage(error)); }
     finally { requestBusy = false; busyText = ''; }
   }
@@ -291,6 +307,17 @@
               <M5Workbench trial={currentTrial} {logger} onAttempt={handleAttempt} onBusy={handleBusy} />
             {/if}
             {/key}
+            <div class="give-up-panel">
+              <p class="give-up-countdown" aria-live="polite">
+                {#if currentTrial.give_up_available}
+                  До «Сдаться»: <strong>0 — доступно</strong>
+                {:else}
+                  До «Сдаться»: <strong>{giveUpRemaining}</strong> разных попыток
+                {/if}
+              </p>
+              <button type="button" class="secondary" data-track="trial-give-up" disabled={requestBusy || !currentTrial.give_up_available} onclick={giveUp}>Сдаться</button>
+              <p class="muted small">Разблокируется после 3 попыток с разными входами. Повтор одного и того же запроса не уменьшает счётчик.</p>
+            </div>
           {/if}
         </section>
       {/if}
@@ -312,4 +339,7 @@
 
 <style>
   .completion-code { margin: 10px auto 16px; font: 800 1.7rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .16em; }
+  .give-up-panel { margin-top: 18px; padding-top: 16px; border-top: 1px solid #e5e9f0; display: grid; justify-items: start; gap: 8px; }
+  .give-up-countdown { margin: 0; font-size: .9rem; color: #55627a; }
+  .give-up-countdown strong { color: #172033; font-size: 1.05rem; }
 </style>

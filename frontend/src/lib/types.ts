@@ -80,6 +80,9 @@ export interface TrialView {
   mode_available: boolean;
   deadline_ms: number | null;
   attempts: AttemptSummary[];
+  unique_attempts: number;
+  give_up_available: boolean;
+  gave_up: boolean;
   next_event_sequence: number;
   last_event_offset_ms: number;
   elapsed_since_start_ms: number;

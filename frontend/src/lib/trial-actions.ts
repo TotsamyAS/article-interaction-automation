@@ -43,6 +43,17 @@ export async function submitM5Attempt(trial: TrialView, text: string, logger: Tr
   return submitAndRecord(trial, { text }, logger, requestId, 'm5-attempts', validationTaskId);
 }
 
+export async function reuseTaskPromptAttempt(
+  trial: TrialView, logger: TrialEventLogger, mode: 'M3' | 'M4' | 'M5', validationTaskId?: string
+) {
+  const text = trial.prompt?.trim();
+  if (!text) throw new Error('Текст задания недоступен.');
+  const requestId = crypto.randomUUID();
+  if (mode === 'M3') return submitM3Attempt(trial, text, logger, requestId, validationTaskId);
+  if (mode === 'M4') return submitM4Attempt(trial, text, logger, requestId, validationTaskId);
+  return submitM5Attempt(trial, text, logger, requestId, validationTaskId);
+}
+
 export async function previewTextRequest(trial: TrialView, text: string, logger: TrialEventLogger, requestId: string, endpoint: 'm3-preview' | 'm4-preview' | 'm5-preview', validationTaskId?: string) {
   logger.requestStarted(requestId, endpoint);
   try {

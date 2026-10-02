@@ -293,6 +293,11 @@ def create_app(settings: Settings | None = None, clock=now_ms, signatures_factor
         app.state.access.authorize_resource(principal, "trial", trial_id)
         return app.state.service.start_trial(trial_id)
 
+    @router.post("/trials/{trial_id}/give-up", response_model=TrialView, tags=["Пробы"])
+    def give_up(trial_id: str, principal: Annotated[Principal, Depends(require_principal)]):
+        app.state.access.authorize_resource(principal, "trial", trial_id)
+        return app.state.service.give_up(trial_id)
+
     @router.post("/trials/{trial_id}/preview", response_model=QueryResult, tags=["Пробы"])
     def preview(trial_id: str, body: Query, principal: Annotated[Principal, Depends(require_principal)]):
         app.state.access.authorize_resource(principal, "trial", trial_id)

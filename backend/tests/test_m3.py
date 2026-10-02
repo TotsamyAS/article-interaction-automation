@@ -62,6 +62,7 @@ def test_prompt_is_domain_compiler_and_schema_is_strict(settings):
 
 
 def test_routerai_request_uses_strict_schema_and_configured_model(settings, monkeypatch):
+    assert settings.llm_model == "deepseek/deepseek-v4.1-flash"
     database = Database(settings)
     database.initialize()
     service = ExperimentService(database)
@@ -171,7 +172,17 @@ def test_m3_runs_llm_query_through_common_executor_and_is_idempotent(settings, c
     assert interpretation["temperature"] == 0.0
 
 
-def test_m3_configuration_cannot_change_after_collection_starts(settings, clock):
+def test_m3_unique_attempts_compare_normalized_input_text(settings, clock):
+    interpreter = FakeInterpreter(Query())
+    service, _, trial = m3_service(settings, clock, interpreter)
+    service.submit_m3(trial["id"], M3AttemptInput(request_id=uuid4(), text="Первый запрос"))
+    service.submit_m3(trial["id"], M3AttemptInput(request_id=uuid4(), text="  ПЕРВЫЙ   запрос  "))
+    assert service.trial(trial["id"])["unique_attempts"] == 1
+    service.submit_m3(trial["id"], M3AttemptInput(request_id=uuid4(), text="Второй запрос"))
+    assert service.trial(trial["id"])["unique_attempts"] == 2
+
+
+def test_m3_model_can_change_but_other_protocol_fields_stay_locked(settings, clock):
     interpreter = FakeInterpreter(Query())
     service, _, trial = m3_service(settings, clock, interpreter)
     first = M3AttemptInput(request_id=uuid4(), text="Первый запрос")
@@ -179,10 +190,16 @@ def test_m3_configuration_cannot_change_after_collection_starts(settings, clock)
     assert interpreter.calls == 1
 
     interpreter.model = "test/other-model"
+    assert service.submit_m3(
+        trial["id"], M3AttemptInput(request_id=uuid4(), text="Второй запрос")
+    )["correct"] is False
+    assert interpreter.calls == 2
+
+    interpreter.temperature = 0.5
     with pytest.raises(DomainError) as caught:
-        service.submit_m3(trial["id"], M3AttemptInput(request_id=uuid4(), text="Второй запрос"))
+        service.submit_m3(trial["id"], M3AttemptInput(request_id=uuid4(), text="Третий запрос"))
     assert caught.value.code == "m3_protocol_changed"
-    assert interpreter.calls == 1
+    assert interpreter.calls == 2
 
 
 def test_m3_provider_failure_is_logged_without_consuming_attempt(settings, clock):

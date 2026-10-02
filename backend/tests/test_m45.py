@@ -10,6 +10,7 @@ from app.api import create_app
 from app.catalog import build_catalog
 from app.contracts import M3AttemptInput, M5AttemptInput, Query, SessionCreate
 from app.database import Database
+from app.errors import DomainError
 from app.llm import Interpretation, PROMPT_VERSION
 from app.service import ExperimentService
 
@@ -98,6 +99,29 @@ def test_m5_agent_result_is_verified_and_trajectory_is_exported(settings, clock)
     run = exported["agent_log"][0]
     assert run["status"] == "ok" and run["tool_calls"] == 3
     assert run["trajectory"][0]["tool"] == "search_tasks"
+
+
+def test_m5_model_can_change_but_agent_protocol_stays_locked(settings, clock):
+    database = Database(settings); database.initialize()
+    service = ExperimentService(database, clock)
+    session = session_with_first_mode(service, "M5MODEL", "M5")
+    agent = FakeAgent(Query())
+    service.configure_m5(agent)
+    trial = service.start_trial(session["trials"][0]["id"])
+
+    assert service.submit_m5(trial["id"], M5AttemptInput(request_id=uuid4(), text="Первый запрос"))["correct"] is False
+    agent.model = "test/other-model"
+    assert service.submit_m5(trial["id"], M5AttemptInput(request_id=uuid4(), text="Второй запрос"))["correct"] is False
+    assert agent.calls == 2
+
+    agent.max_steps = 13
+    try:
+        service.submit_m5(trial["id"], M5AttemptInput(request_id=uuid4(), text="Третий запрос"))
+    except DomainError as error:
+        assert error.code == "m5_protocol_changed"
+    else:
+        raise AssertionError("M5 protocol change should remain blocked")
+    assert agent.calls == 2
 
 
 def test_agent_state_rejects_string_for_in_without_changing_selection(settings):

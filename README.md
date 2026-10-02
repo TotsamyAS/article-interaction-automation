@@ -107,7 +107,7 @@ Task Mining обязателен во всех M1–M5: frontend журнали�
 
 ## M3 и M4 через RouterAI
 
-M3 использует `backend/app/llm.py`: OpenAI-compatible `POST /chat/completions` RouterAI → strict JSON Schema → Pydantic `Query` → общий executor. По умолчанию выбран `google/gemma-4-26b-a4b-it`, `temperature=0`, `seed=0`, endpoint `https://routerai.ru/api/v1`; timeout и модель находятся в `backend/config.json`, API key — только в корневом `.env` как `ROUTERAI_API_KEY`.
+M3 использует `backend/app/llm.py`: OpenAI-compatible `POST /chat/completions` RouterAI → strict JSON Schema → Pydantic `Query` → общий executor. По умолчанию выбран `deepseek/deepseek-v4.1-flash`, `temperature=0`, `seed=0`, endpoint `https://routerai.ru/api/v1`; timeout и модель находятся в `backend/config.json`, API key — только в корневом `.env` как `ROUTERAI_API_KEY`.
 
 Системный prompt генерируется из фактических допустимых значений набора данных и фиксированной D0, задаёт точную семантику дат, NULL, меток, агрегатов, группировки, экстремума и CSV. Few-shot примеры синтетические и не содержат экспериментальные формулировки C1a–C3e. Структурированная схема строится непосредственно из Pydantic-контракта `Query`. Runtime prompt M3/M4 имеет версию `m3-query-v3` и явно связывает термины интерфейса «Направление работ»/«Рабочий цикл» с каноническими полями набора.
 
@@ -121,7 +121,7 @@ M4 использует RouterAI ASR: `MediaRecorder` передаёт ауди�
 
 ## M5: RouterAI agent
 
-M5 переносит в backend протокол из `benchmarks/m5_agent_benchmark.ipynb`: та же `google/gemma-4-26b-a4b-it`, `temperature=0`, последовательный tool loop и семь атомарных инструментов. Лимит — `m5_max_llm_steps=12`. Tool calls выполняются в порядке ответа модели; скрытые chain-of-thought данные не запрашиваются и не сохраняются. `in/not_in` принимают только списки — невалидный аргумент не меняет состояние агента.
+M5 переносит в backend протокол из `benchmarks/m5_agent_benchmark.ipynb`: та же `deepseek/deepseek-v4.1-flash`, `temperature=0`, последовательный tool loop и семь атомарных инструментов. Лимит — `m5_max_llm_steps=12`. Tool calls выполняются в порядке ответа модели; скрытые chain-of-thought данные не запрашиваются и не сохраняются. `in/not_in` принимают только списки — невалидный аргумент не меняет состояние агента.
 
 M5 хранит наблюдаемую trajectory отдельно: LLM/tool шаги, аргументы и результаты, latency, tokens/provider/model, termination и финальный `Query`. Затем финальный запрос проходит общий `ExperimentService.submit`, поэтому попытки, эталон, CSV и метрики остаются сопоставимыми с M1–M4. Task Mining M5 остаётся браузерным журналом действий участника и системного ожидания; trajectory — диагностический журнал самого агента.
 
