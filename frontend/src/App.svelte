@@ -14,6 +14,7 @@
   import HelpDrawer from './lib/components/HelpDrawer.svelte';
   import IntroDeck from './lib/components/IntroDeck.svelte';
   import AdminValidation from './lib/components/AdminValidation.svelte';
+  import AnimatedTaskPrompt from './lib/components/AnimatedTaskPrompt.svelte';
   import { downloadUrl, initializeAccessContext, setAccessContext } from './lib/access-context';
 
   let authState = $state<'loading' | 'authorized' | 'unauthorized' | 'error'>('loading');
@@ -276,7 +277,7 @@
               <div class="unavailable-card"><h2>Режим {currentTrial.mode} пока не подключён</h2><p>Backend не подменяет M4–M5 другими интерфейсами. Продолжение этой сессии станет доступно после подключения соответствующего режима.</p></div>
             {/if}
           {:else}
-            <div class="task-prompt"><p class="eyebrow">Задание {currentTrial.task_id}</p><h2>{currentTrial.prompt}</h2></div>
+            <div class="task-prompt"><p class="eyebrow">Задание {currentTrial.task_id}</p><AnimatedTaskPrompt text={currentTrial.prompt} /></div>
             {#key currentTrial.id}
             {#if currentTrial.mode === 'M1' && logger && loggerTrialId === currentTrial.id}
               <M1Workbench trial={currentTrial} {records} referenceDate={currentSession.manifest.protocol.reference_date} {logger} onAttempt={handleAttempt} onBusy={handleBusy} />
