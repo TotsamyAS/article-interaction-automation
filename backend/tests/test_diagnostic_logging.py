@@ -80,6 +80,9 @@ def test_task_mining_409_log_contains_server_and_incoming_cursors(settings, cloc
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "[task-mining]" in messages
     assert '"stage": "rejected"' in messages
+    assert '"participant_code": "LOGEVENTS"' in messages
+    assert f'"session_id": "{session["id"]}"' in messages
+    assert f'"trial_id": "{trial["id"]}"' in messages
     assert '"code": "event_sequence"' in messages
     assert '"server_last_sequence": 0' in messages
     assert '"sequence": 0' in messages

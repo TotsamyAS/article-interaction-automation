@@ -28,8 +28,8 @@ TABLE_COLUMNS = {
                "A1_actual", "attempts", "Nretry_actual", "Tcorrect_analysis_ms", "A1_analysis", "Nretry_analysis", "incomplete"],
     "attempts": ["session_id", "participant_code", "kind", "trial_id", "mode", "task_id", "level", "attempt_id", "ordinal", "correct",
                  "started_ms", "finished_ms", "Texec_ms", "query", "record_ids", "aggregate", "selected_groups", "export_url"],
-    "events": ["session_id", "participant_code", "kind", "trial_id", "mode", "task_id", "level", "event_id", "sequence", "offset_ms",
-               "received_ms", "event_kind", "target", "action", "x", "y", "key", "request_id"],
+    "events": ["session_id", "participant_code", "kind", "trial_id", "trial_position", "mode", "task_id", "level", "event_id", "sequence", "offset_ms",
+               "occurred_ms", "duration_ms", "duration_complete", "received_ms", "event_kind", "target", "action", "x", "y", "key", "request_id"],
     "interpretations": ["session_id", "participant_code", "kind", "trial_id", "mode", "task_id", "level", "request_id", "user_text",
                         "status", "requested_model", "response_model", "provider", "system_fingerprint", "prompt_version", "prompt_sha256", "temperature",
                         "raw_response", "query", "error_code", "error_message",
@@ -45,6 +45,63 @@ TABLE_COLUMNS = {
                 "A1_observed_n", "A1_actual_rate", "A1_analysis_rate", "Tcorrect_actual_n", "Tcorrect_actual_mean_ms",
                 "Tcorrect_analysis_mean_ms", "Tuser_active_mean_ms", "Nretry_actual_mean", "Nretry_analysis_mean"],
 }
+
+
+def _event_span(payload: dict) -> tuple[tuple[str, str], bool] | None:
+    kind = payload.get("kind")
+    if kind in ("focus_lost", "focus_gained"):
+        return (("focus", "window"), kind == "focus_lost")
+    if kind in ("request_started", "request_finished") and payload.get("request_id"):
+        return (("request", str(payload["request_id"])), kind == "request_started")
+    if kind in ("speech_started", "speech_finished"):
+        return (("speech", payload.get("target", "")), kind == "speech_started")
+    if kind == "navigation":
+        target = payload.get("target", "")
+        if target.endswith(":open"):
+            return (("navigation", target[:-5]), True)
+        if target.endswith(":closed"):
+            return (("navigation", target[:-7]), False)
+    return None
+
+
+def event_duration_metadata(event_log: list[dict], trials_by_id: dict[str, dict]) -> dict[tuple[str, str], dict]:
+    """Calculate event durations while keeping censored intervals distinguishable."""
+    metadata: dict[tuple[str, str], dict] = {}
+    open_spans: dict[tuple[str, tuple[str, str]], tuple[tuple[str, str], int]] = {}
+    for event in event_log:
+        event_key = (event["trial_id"], event["event_id"])
+        metadata[event_key] = {"duration_ms": 0, "duration_complete": True}
+        span = _event_span(event["payload"])
+        if span is None:
+            continue
+        span_key, starts = span
+        key = (event["trial_id"], span_key)
+        if starts:
+            previous = open_spans.get(key)
+            if previous is not None:
+                previous_key, previous_offset = previous
+                metadata[previous_key] = {
+                    "duration_ms": max(0, event["offset_ms"] - previous_offset),
+                    "duration_complete": False,
+                }
+            open_spans[key] = (event_key, event["offset_ms"])
+            metadata[event_key] = {"duration_ms": 0, "duration_complete": False}
+            continue
+        previous = open_spans.pop(key, None)
+        if previous is not None:
+            previous_key, previous_offset = previous
+            metadata[previous_key] = {
+                "duration_ms": max(0, event["offset_ms"] - previous_offset),
+                "duration_complete": True,
+            }
+
+    for (trial_id, _), (event_key, start_offset) in open_spans.items():
+        observation_end = max(start_offset, trials_by_id[trial_id]["elapsed_since_start_ms"])
+        metadata[event_key] = {
+            "duration_ms": observation_end - start_offset,
+            "duration_complete": False,
+        }
+    return metadata
 
 
 class AnalyticsService:
@@ -76,6 +133,8 @@ class AnalyticsService:
                         "incomplete": sum(trial["status"] == "incomplete" for trial in terminal),
                     })
                 selected = {}
+                trials_by_id = {trial["id"]: trial for trial in session["trials"]}
+                duration_metadata = event_duration_metadata(session["event_log"], trials_by_id)
                 base = {"session_id": session["id"], "participant_code": session["participant_code"], "kind": session["kind"]}
                 for trial in session["trials"]:
                     if filters.mode and trial["mode"] != filters.mode:
@@ -106,7 +165,11 @@ class AnalyticsService:
                     if event["trial_id"] not in selected:
                         continue
                     payload = event["payload"]
-                    events.append({**selected[event["trial_id"]], "event_id": event["event_id"], "sequence": event["sequence"], "offset_ms": event["offset_ms"],
+                    trial = trials_by_id[event["trial_id"]]
+                    duration = duration_metadata[(event["trial_id"], event["event_id"])]
+                    events.append({**selected[event["trial_id"]], "trial_position": trial["position"],
+                                   "event_id": event["event_id"], "sequence": event["sequence"], "offset_ms": event["offset_ms"],
+                                   "occurred_ms": trial["started_ms"] + event["offset_ms"], **duration,
                                    "received_ms": event["received_ms"], "event_kind": payload["kind"], "target": payload["target"],
                                    "action": payload.get("action"), "x": payload.get("x"), "y": payload.get("y"), "key": payload.get("key"),
                                    "request_id": payload["request_id"]})
@@ -147,8 +210,10 @@ class AnalyticsService:
                                        "input_tokens": item["input_tokens"], "output_tokens": item["output_tokens"],
                                        "started_ms": item["started_ms"], "finished_ms": item["finished_ms"]})
             generated = self.experiment.clock()
-        return {"protocol": {"export_schema_version": 7, "generated_at_ms": generated, "filters": filters.model_dump(mode="json"),
+        return {"protocol": {"export_schema_version": 8, "generated_at_ms": generated, "filters": filters.model_dump(mode="json"),
                              "manifest": self.experiment.manifest, "time_units": "milliseconds", "missing_value": "empty cell / JSON null",
+                             "event_duration_semantics": "point/closing events=0; interval-start events span to matching finish/close; unclosed spans are right-censored at the observation boundary",
+                             "event_ordering": "filter by participant_code; order by occurred_ms, trial_position, sequence",
                              "summary_population": "terminal trials only; actual Tcorrect includes successful trials only",
                              "training_excluded": not filters.include_practice},
                 "registry": registry, "trials": trials, "attempts": attempts, "events": events, "interpretations": interpretations,

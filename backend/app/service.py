@@ -746,14 +746,22 @@ class ExperimentService:
 
     def ingest_events(self, trial_id, events: list[Event]):
         event_views = [self._event_log_view(event) for event in events]
-        self._log_task_mining("batch_received", trial_id=trial_id, count=len(events), events=event_views)
         with self.database.transaction() as connection:
             trial = self._trial(connection, trial_id)
+            session = self._session(connection, trial["session_id"])
+            log_context = {
+                "participant_code": session["participant_code"],
+                "session_id": session["id"],
+                "trial_id": trial_id,
+                "mode": trial["mode"],
+                "task_id": trial["task_id"],
+            }
+            self._log_task_mining("batch_received", **log_context, count=len(events), events=event_views)
             self._expire(connection, trial, self.clock())
-            self._log_task_mining("trial_state", trial_id=trial_id, status=trial["status"],
+            self._log_task_mining("trial_state", **log_context, status=trial["status"],
                                   started_ms=trial["started_ms"], ended_ms=trial["ended_ms"])
             if trial["started_ms"] is None:
-                self._log_task_mining("rejected", trial_id=trial_id, code="trial_not_started", events=event_views)
+                self._log_task_mining("rejected", **log_context, code="trial_not_started", events=event_views)
                 raise DomainError("trial_not_started", "Сначала начните пробу.", 409)
             end = trial["ended_ms"] if trial["ended_ms"] is not None else self.clock()
             max_offset = max(0, end - trial["started_ms"])
@@ -762,7 +770,7 @@ class ExperimentService:
                 (trial_id,),
             ).fetchone()
             last_seq, last_offset = (previous["sequence"], previous["offset_ms"]) if previous else (-1, -1)
-            self._log_task_mining("cursor", trial_id=trial_id, server_last_sequence=last_seq,
+            self._log_task_mining("cursor", **log_context, server_last_sequence=last_seq,
                                   server_last_offset_ms=last_offset, max_offset_ms=max_offset,
                                   incoming_first_sequence=events[0].sequence if events else None,
                                   incoming_last_sequence=events[-1].sequence if events else None)
@@ -777,23 +785,23 @@ class ExperimentService:
                 ).fetchone()
                 if duplicate:
                     if duplicate["payload"] != payload:
-                        self._log_task_mining("rejected", trial_id=trial_id, code="event_conflict", event=view,
+                        self._log_task_mining("rejected", **log_context, code="event_conflict", event=view,
                                               server_last_sequence=last_seq, server_last_offset_ms=last_offset)
                         raise DomainError("event_conflict", "Не удалось сохранить журнал действий: повторно отправленное действие изменилось. Сообщите исследователю.", 409)
                     duplicates += 1
-                    self._log_task_mining("duplicate", trial_id=trial_id, event=view,
+                    self._log_task_mining("duplicate", **log_context, event=view,
                                           server_last_sequence=last_seq, server_last_offset_ms=last_offset)
                     continue
                 if event.sequence <= last_seq:
-                    self._log_task_mining("rejected", trial_id=trial_id, code="event_sequence", event=view,
+                    self._log_task_mining("rejected", **log_context, code="event_sequence", event=view,
                                           server_last_sequence=last_seq, server_last_offset_ms=last_offset)
                     raise DomainError("event_sequence", "Не удалось сохранить журнал действий: эта проба уже обновлена, возможно, в другой вкладке. Оставьте одну вкладку стенда и обновите страницу.", 409)
                 if event.offset_ms < last_offset:
-                    self._log_task_mining("rejected", trial_id=trial_id, code="event_time_order", event=view,
+                    self._log_task_mining("rejected", **log_context, code="event_time_order", event=view,
                                           server_last_sequence=last_seq, server_last_offset_ms=last_offset)
                     raise DomainError("event_time_order", "Не удалось сохранить журнал действий: время действий записано в неправильном порядке. Сообщите исследователю и обновите страницу.", 409)
                 if event.offset_ms > max_offset:
-                    self._log_task_mining("rejected", trial_id=trial_id, code="event_outside_trial", event=view,
+                    self._log_task_mining("rejected", **log_context, code="event_outside_trial", event=view,
                                           server_last_sequence=last_seq, server_last_offset_ms=last_offset,
                                           max_offset_ms=max_offset)
                     raise DomainError("event_outside_trial", "Не удалось сохранить журнал действий: действие записано за пределами времени этой пробы. Сообщите исследователю и обновите страницу.", 409)
@@ -801,9 +809,9 @@ class ExperimentService:
                                    (trial_id, str(event.event_id), event.sequence, event.offset_ms, payload, self.clock()))
                 last_seq, last_offset = event.sequence, event.offset_ms
                 accepted += 1
-                self._log_task_mining("event_accepted", trial_id=trial_id, event=view,
+                self._log_task_mining("event_accepted", **log_context, event=view,
                                       server_last_sequence=last_seq, server_last_offset_ms=last_offset)
-            self._log_task_mining("batch_committed", trial_id=trial_id, accepted=accepted, duplicates=duplicates,
+            self._log_task_mining("batch_committed", **log_context, accepted=accepted, duplicates=duplicates,
                                   server_last_sequence=last_seq, server_last_offset_ms=last_offset)
             return {"accepted": accepted, "duplicates": duplicates}
 

@@ -1,3 +1,9 @@
+# Явные длительности и персональные цепочки Task Mining — 06.10.2026
+
+- В аналитическом `events` у каждой строки явно есть псевдонимизированный `participant_code`, `trial_position`, абсолютное `occurred_ms`, `duration_ms` и `duration_complete`. Это позволяет отфильтровать одного испытуемого и восстановить его последовательность по `occurred_ms`, затем `trial_position`/`sequence`.
+- Точечные действия имеют `duration_ms = 0`. Интервалы считаются на стартовом событии: `focus_lost→focus_gained`, `request_started→request_finished`, `speech_started→speech_finished`, а также `navigation ...:open→...:closed` для сворачиваемых подсказок. Незакрытый интервал считается до границы наблюдения и помечается `duration_complete = false` (right-censored).
+- Диагностические `[task-mining]` server logs теперь также содержат `participant_code`, `session_id`, `trial_id`, `mode` и `task_id`, чтобы события не теряли принадлежность к испытуемому при разборе логов.
+
 # Актуализация M4 ASR — 30.09.2026
 
 - **Причина изменения:** browser Web Speech API оказался недоступен из России без VPN, а VPN ухудшал доступ к самому стенду. Чтобы не вводить VPN как неконтролируемый фактор эксперимента, Web Speech API исключён из M4.

@@ -102,6 +102,49 @@ def test_successful_api_flow_idempotency_and_session_export(client, clock):
     assert saved.json()["trials"][0]["metrics"]["actual"]["Tcorrect_ms"] == 1000
 
 
+def test_task_mining_events_export_explicit_participant_order_and_durations(client, clock):
+    _, trial = create_started(client, code="P-DURATION")
+    started = client.get(f'/api/trials/{trial["id"]}').json()["started_ms"]
+    request_id = str(uuid4())
+    clock.advance(10000)
+    raw_events = [
+        {"sequence": 0, "offset_ms": 1000, "kind": "input", "target": "m2-builder", "action": "click"},
+        {"sequence": 1, "offset_ms": 2000, "kind": "focus_lost", "target": "window"},
+        {"sequence": 2, "offset_ms": 3500, "kind": "focus_gained", "target": "window"},
+        {"sequence": 3, "offset_ms": 4000, "kind": "request_started", "target": "m2-preview", "request_id": request_id},
+        {"sequence": 4, "offset_ms": 6000, "kind": "request_finished", "target": "m2-preview", "request_id": request_id},
+        {"sequence": 5, "offset_ms": 6500, "kind": "speech_started", "target": "m4-speech"},
+        {"sequence": 6, "offset_ms": 8000, "kind": "speech_finished", "target": "m4-speech"},
+        {"sequence": 7, "offset_ms": 8500, "kind": "navigation", "target": "m2-mode-hint:open"},
+        {"sequence": 8, "offset_ms": 9000, "kind": "navigation", "target": "m2-mode-hint:closed"},
+        {"sequence": 9, "offset_ms": 9500, "kind": "navigation", "target": "m2-mode-hint:open"},
+    ]
+    events = [{"event_id": str(uuid4()), **event} for event in raw_events]
+    response = client.post(f'/api/trials/{trial["id"]}/events', json={"events": events})
+    assert response.status_code == 200, response.json()
+
+    snapshot = client.get('/api/analytics?participant_code=P-DURATION').json()
+    rows = snapshot["events"]
+    assert len(rows) == len(events)
+    assert {row["participant_code"] for row in rows} == {"P-DURATION"}
+    assert [row["sequence"] for row in rows] == list(range(len(events)))
+    assert [row["occurred_ms"] for row in rows] == [started + event["offset_ms"] for event in raw_events]
+    assert rows[0]["duration_ms"] == 0 and rows[0]["duration_complete"] is True
+    assert rows[1]["duration_ms"] == 1500 and rows[1]["duration_complete"] is True
+    assert rows[3]["duration_ms"] == 2000 and rows[3]["duration_complete"] is True
+    assert rows[5]["duration_ms"] == 1500 and rows[5]["duration_complete"] is True
+    assert rows[7]["duration_ms"] == 500 and rows[7]["duration_complete"] is True
+    assert rows[9]["duration_ms"] == 500 and rows[9]["duration_complete"] is False
+    assert all(row["duration_ms"] >= 0 for row in rows)
+    assert snapshot["protocol"]["export_schema_version"] == 8
+
+    csv_response = client.get('/api/analytics/events.csv?participant_code=P-DURATION')
+    exported = list(csv.DictReader(io.StringIO(csv_response.content.decode("utf-8-sig"))))
+    assert exported[0]["participant_code"] == "P-DURATION"
+    assert exported[1]["duration_ms"] == "1500"
+    assert exported[1]["occurred_ms"] == str(started + 2000)
+
+
 def test_validation_does_not_echo_untrusted_request(client):
     response = client.post("/api/sessions", json={"participant_code": "<invalid-value>"})
     assert response.status_code == 422
