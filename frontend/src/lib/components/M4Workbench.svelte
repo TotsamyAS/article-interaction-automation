@@ -4,6 +4,7 @@
   import { previewTextRequest, reuseTaskPromptAttempt, submitM4Attempt } from '../trial-actions';
   import type { AttemptView, M4TranscriptionView, Query, QueryResult, TrialView } from '../types';
   import type { TrialEventLogger } from '../event-logger';
+  import ModeHint from './ModeHint.svelte';
   import QueryInspector from './QueryInspector.svelte';
   import ResultsTable from './ResultsTable.svelte';
 
@@ -210,7 +211,9 @@
 
 <div class="workbench" data-track="m4-workbench">
   <div class="workbench-heading"><div><span class="mode-pill">M4 · Speech</span><h2>Голосовая формулировка</h2></div></div>
-  <p class="instruction">Произнесите цель, остановите запись и дождитесь расшифровки. Аудио отправляется сервером стенда в RouterAI для распознавания речи; VPN и Web Speech API в браузере не используются. Проверьте распознанный текст, затем откройте предпросмотр RouterAI.</p>
+  <ModeHint {logger} track="m4-mode-hint">
+    <p class="instruction">Произнесите цель, остановите запись и дождитесь расшифровки. Аудио отправляется сервером стенда в RouterAI для распознавания речи; VPN и Web Speech API в браузере не используются. Проверьте распознанный текст, затем откройте предпросмотр RouterAI.</p>
+  </ModeHint>
   {#if !mediaSupported}<p class="notice warning" role="alert">В этом браузере нет MediaRecorder или доступа к микрофону. Для M4 используйте актуальный Chrome, Edge или Firefox.</p>{/if}
   <div class="primary-actions">
     {#if listening}<button type="button" class="secondary" data-track="m4-stop" onclick={stopSpeech}>Остановить запись</button>

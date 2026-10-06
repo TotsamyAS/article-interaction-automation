@@ -7,6 +7,7 @@
   import QueryInspector from './QueryInspector.svelte';
   import ResultsTable from './ResultsTable.svelte';
   import WorkbenchGuide from './WorkbenchGuide.svelte';
+  import ModeHint from './ModeHint.svelte';
 
   let { trial, help, logger, onAttempt, onBusy, validationTaskId }: {
     trial: TrialView; help: ManualQueryHelp; logger: TrialEventLogger;
@@ -64,18 +65,20 @@
 
 <div class="workbench" data-track="m2-workbench">
   <div class="workbench-heading"><div><span class="mode-pill">M2 · Form</span><h2>Конструктор запроса</h2></div></div>
-  <p class="instruction">{help.instruction}</p>
-  <WorkbenchGuide mode="M2" />
+  <ModeHint {logger} track="m2-mode-hint">
+    <p class="instruction">{help.instruction}</p>
+    <WorkbenchGuide mode="M2" />
+    <section class="control-card compact-help-card">
+      <h3>Если нужно найти самую большую/маленькую группу</h3>
+      <p><strong>Группировка</strong> выбирает, по чему разделить строки → <strong>Итог</strong> задаёт число для каждой группы → <strong>Экстремум</strong> выбирает максимум или минимум. Например, «больше всего задач у исполнителя» означает группировку по исполнителю + итог «Количество» + экстремум «Максимум».</p>
+      <p class="muted small">«Сортировка» только меняет порядок строк в нижней таблице. Она не выбирает группу-победителя.</p>
+    </section>
+  </ModeHint>
   <section class="control-card">
     <div class="section-heading"><h3>1. Соберите условия</h3></div>
     <p class="muted small">Каждое готовое условие становится отдельным блоком. Обычные фильтры ограничивают строки; «Группировка», «Итог» и «Экстремум» управляют расчётом над ними.</p>
     <TagInput bind:value={tags} bind:pending={pendingTag} builders={help.builders} placeholder={help.placeholder} disabled={busy} maxTags={40} />
     <div class="syntax-hints"><span>Примеры:</span>{#each help.examples as example}<code>{example}</code>{/each}</div>
-  </section>
-  <section class="control-card compact-help-card">
-    <h3>2. Если нужно найти самую большую/маленькую группу</h3>
-    <p><strong>Группировка</strong> выбирает, по чему разделить строки → <strong>Итог</strong> задаёт число для каждой группы → <strong>Экстремум</strong> выбирает максимум или минимум. Например, «больше всего задач у исполнителя» означает группировку по исполнителю + итог «Количество» + экстремум «Максимум».</p>
-    <p class="muted small">«Сортировка» только меняет порядок строк в нижней таблице. Она не выбирает группу-победителя.</p>
   </section>
 
   {#if message}<p class="notice error" role="alert"><strong>Не удалось выполнить действие.</strong> {message}</p>{/if}

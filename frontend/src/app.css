@@ -80,7 +80,7 @@ textarea { resize: vertical; min-height: 120px; font: inherit; line-height: 1.5;
 .operation-grid label { display: grid; min-width: 0; gap: 6px; color: #53627b; font-size: .85rem; font-weight: 650; }
 .operation-grid select { min-width: 0; min-height: 42px; }
 .primary-actions { display: flex; justify-content: flex-end; margin: 16px 0; }
-.instruction { margin-bottom: 12px; color: #394963; }
+.instruction { margin: 0 0 12px; color: #394963; }
 .syntax-hints { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 10px 0 4px; color: #718099; font-size: .82rem; }
 .syntax-hints code { padding: 4px 7px; border-radius: 6px; background: #eef2f8; color: #42506a; }
 .notice { border-radius: 10px; padding: 10px 12px; }
@@ -189,9 +189,13 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 9px; margin-top
 
 .preview-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin: 18px 0; }
 .preview-placeholder { margin: 18px 0 0; padding: 24px; border: 1px dashed #cbd5e3; border-radius: 12px; color: #68758d; text-align: center; background: #fafbfd; }
-.workbench-guide { margin: 14px 0 18px; border: 1px solid #dce4ef; border-radius: 12px; background: #f7f9fc; }
-.workbench-guide > summary { cursor: pointer; padding: 12px 14px; color: #263d72; font-weight: 750; }
-.guide-body { padding: 0 16px 14px; color: #3f4e66; line-height: 1.5; }
+.mode-hint { margin: 14px 0 18px; border: 1px solid #dce4ef; border-radius: 12px; background: #f7f9fc; }
+.mode-hint > summary { cursor: pointer; padding: 12px 14px; color: #263d72; font-weight: 750; }
+.mode-hint-body { padding: 0 14px 14px; }
+.mode-hint-body > .instruction:first-child { margin-top: 0; }
+.workbench-guide { margin: 12px 0 0; border-top: 1px solid #dce4ef; padding-top: 12px; }
+.workbench-guide > h3 { margin: 0; color: #263d72; font-size: 1rem; }
+.guide-body { color: #3f4e66; line-height: 1.5; }
 .guide-body ol { margin: 8px 0 12px; padding-left: 22px; }
 .guide-body li { margin: 7px 0; }
 .guide-example { margin: 12px 0; padding: 10px 12px; border-radius: 9px; background: white; border: 1px solid #e0e6ef; }

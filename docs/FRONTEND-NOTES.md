@@ -1,5 +1,10 @@
 # Frontend notes
 
+## Сворачиваемые подсказки режимов — 06.10.2026
+
+- Верхняя подсказка каждого рабочего режима M1–M5 оформлена общим `ModeHint.svelte` на native `<details>` и по умолчанию закрыта. В M1/M2 внутри неё находится также памятка по группировке/итогу/экстремуму; в M2 туда же перенесена дополнительная памятка о выборе максимальной/минимальной группы.
+- Каждое раскрытие/сворачивание записывается в Task Mining как `navigation` с явным состоянием, например `m2-mode-hint:open` / `m2-mode-hint:closed`. Обычный click по заголовку продолжает фиксироваться глобальным `TrialEventLogger`.
+
 ## M4/M5 и Task Mining — 29.09.2026
 
 - `M4Workbench.svelte`: запись через `MediaRecorder`, максимум 20 секунд; raw audio уходит по HTTPS в `/m4-transcribe`, где self-hosted `GigaAM-v3/e2e_rnnt` возвращает transcript. Transcript read-only, разрешена новая запись. Web Speech API и Firefox-блокировка удалены; актуальные Chrome/Edge/Firefox работают при наличии MediaRecorder и разрешения микрофона.

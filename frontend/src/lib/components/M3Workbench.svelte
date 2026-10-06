@@ -3,6 +3,7 @@
   import { previewTextRequest, reuseTaskPromptAttempt, submitM3Attempt } from '../trial-actions';
   import type { AttemptView, Query, QueryResult, TrialView } from '../types';
   import type { TrialEventLogger } from '../event-logger';
+  import ModeHint from './ModeHint.svelte';
   import QueryInspector from './QueryInspector.svelte';
   import ResultsTable from './ResultsTable.svelte';
 
@@ -64,7 +65,9 @@
 
 <div class="workbench" data-track="m3-workbench">
   <div class="workbench-heading"><div><span class="mode-pill">M3 · Text</span><h2>Запрос на естественном языке</h2></div></div>
-  <p class="instruction">Опишите своими словами конечный результат. Сначала получите предпросмотр: RouterAI преобразует текст в структурированный Query, а общий executor покажет таблицу. Предпросмотр не расходует попытку.</p>
+  <ModeHint {logger} track="m3-mode-hint">
+    <p class="instruction">Опишите своими словами конечный результат. Сначала получите предпросмотр: RouterAI преобразует текст в структурированный Query, а общий executor покажет таблицу. Предпросмотр не расходует попытку.</p>
+  </ModeHint>
   <textarea data-track="m3-text" rows="5" maxlength="2000" aria-label="Текст запроса" placeholder="Например: отфильтруйте задачи, сгруппируйте их, посчитайте нужный итог и при необходимости выберите максимум/минимум и экспорт" bind:value={text}></textarea>
   {#if message}<p class="notice error" role="alert"><strong>Не удалось выполнить действие.</strong> {message}</p>{/if}
   {#if previewQuery && !previewCurrent}<p class="notice warning">Текст изменён после предпросмотра. Нижняя таблица относится к предыдущей формулировке — обновите предпросмотр.</p>{/if}

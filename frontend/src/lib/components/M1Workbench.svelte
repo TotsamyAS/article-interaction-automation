@@ -6,6 +6,7 @@
   import ResultsTable from './ResultsTable.svelte';
   import QueryInspector from './QueryInspector.svelte';
   import WorkbenchGuide from './WorkbenchGuide.svelte';
+  import ModeHint from './ModeHint.svelte';
   import { displayValue } from '../terminology';
 
   let { trial, records, referenceDate, logger, onAttempt, onBusy, validationTaskId }: {
@@ -142,8 +143,10 @@
 
 <div class="workbench" data-track="m1-workbench">
   <div class="workbench-heading"><div><span class="mode-pill">M1 · GUI</span><h2>Ручная обработка</h2></div></div>
-  <p class="instruction">Соберите запрос из фильтров и операций. Кнопка предпросмотра безопасна: она показывает результат и не расходует попытку. Только «Отправить итоговый ответ» фиксирует попытку.</p>
-  <WorkbenchGuide mode="M1" />
+  <ModeHint {logger} track="m1-mode-hint">
+    <p class="instruction">Соберите запрос из фильтров и операций. Кнопка предпросмотра безопасна: она показывает результат и не расходует попытку. Только «Отправить итоговый ответ» фиксирует попытку.</p>
+    <WorkbenchGuide mode="M1" />
+  </ModeHint>
 
   <section class="control-card">
     <div class="section-heading"><h3>1. Фильтры</h3><button type="button" class="secondary compact" data-track="m1-add-filter" onclick={() => filters.push(newFilter())}>+ Добавить</button></div>
