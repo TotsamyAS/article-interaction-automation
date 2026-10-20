@@ -9,3 +9,4 @@ data/
 node_modules/
 .DS_Store
 docs/article_project.docxbenchmarks/asr_benchmark.wav
+.analytics/

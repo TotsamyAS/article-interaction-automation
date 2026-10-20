@@ -48,13 +48,13 @@ docker compose exec backend sh scripts/invite.sh --help
 Ссылки выпускаются только внутри запущенного backend-контейнера:
 
 ```sh
-# участник
+# Participant
 docker compose exec backend sh scripts/invite.sh P001
 
-# исследователь с доступом к общей аналитике
+# Researcher with access to aggregate analytics
 docker compose exec backend sh scripts/invite.sh RESEARCHER --role researcher
 
-# отзыв ссылки; экспериментальные данные сохраняются
+# Revoke the invitation; preserve experiment data
 docker compose exec backend sh scripts/invite.sh P001 --revoke
 ```
 
@@ -129,7 +129,19 @@ M5 хранит наблюдаемую trajectory отдельно: LLM/tool ш�
 
 ## Аналитика для статьи
 
+Для быстрого локального просмотра откройте [`fast_watcher.html`](fast_watcher.html) двойным щелчком в современном браузере. Войдите на сервер по приглашению исследователя в том же браузере, нажмите «Скачать Task Mining ZIP» и перетащите скачанный ZIP в окно просмотра. При нескольких авторизациях можно указать несекретный UUID контекста исследователя (`access`). HTML не выполняет SSH, не запрашивает приглашение и не хранит данные после закрытия страницы; Docker и установка зависимостей для него не нужны.
+
+Просмотр показывает графики Canvas, число выполненных проб, отказов «сдаться», других неуспехов, активных и неначатых проб. Есть поиск и выбор по `participant_code`, фильтры режима/уровня, таблица проб и CSV-сводка текущего выбора. Несколько сессий одного кода суммируются; тренировки по умолчанию исключены. «Сдался» определяется по `gave_up`, а не по `end_reason=attempt_limit`: эта причина используется также при обычном исчерпании попыток. Старый экспорт без `gave_up` выводится с предупреждением. Поддерживаются также `trials.csv` и JSON-снимок `/api/analytics`. Для проверки: импортируйте свежий ZIP, выберите участника и сравните количества с его строками в `trials.csv`; при повторном импорте данные заменяются, не добавляются.
+
 После входа по приглашению исследователя доступны через origin frontend:
+
+В локальном просмотрщике правая колонка «Результаты по режимам» прокручивается и содержит графики минимума, среднего и максимума фактического времени и числа попыток на одну пробу, а также таблицу с суммами по M1–M5. По умолчанию учитываются все завершённые пробы; переключатель позволяет оставить только успешные. Общее время (`elapsed_ms`) и активное пользование (`Tuser_active_ms`) представлены отдельными графиками и таблицами с суммой, средним, минимумом и максимумом; попытки (`attempts`) — отдельной сводкой. Активное время исключает зарегистрированную потерю фокуса, системное ожидание и длинные паузы между действиями; это оценка активности, а не полное время размышления. Отсутствующее активное время не подменяется общим. При подсчёте `attempts`: все итоговые попытки до успеха включены, активные и неначатые пробы исключены, отсутствующие значения не считаются нулями. Расчёт следует текущим фильтрам; таблица показывает число наблюдений каждого показателя. Время отображается в минутах без штрафных подстановок. Для ручной проверки выберите одного участника и режим, сопоставьте сумму времени и попыток с его завершёнными строками `trials.csv`, затем переключите расчёт на зелёные пробы.
+
+После входа по приглашению исследователя доступны через origin frontend:
+
+Матрица «Режим × уровень задачи» группирует пробы по M1–M5 и C1–C3 (варианты a–e объединяются по уровню). Можно выбрать активное/общее время или попытки и статистику: среднее на пробу, минимум, максимум, сумму. Ячейки показывают значение и N наблюдений; цвет обозначает величину показателя в текущем выборе, а не успешность. Итоги строк и столбцов рассчитываются по исходным пробам, без усреднения средних. Матрица следует тем же фильтрам и выбору завершённых/зелёных проб, что правая колонка. Для проверки выберите M4 и C2 и сравните ячейку с соответствующей сводкой режима.
+
+Из всей выборки локального просмотрщика исключаются участники, у которых хотя бы одна основная проба имеет статус `pending` («Не начато»). Проверка идёт по всем загруженным основным пробам до фильтров режима/уровня; исключаются все сессии такого кода участника. Тренировочные пробы не вызывают исключение. Правило общее для списка участников, графиков, таблиц, heatmap и CSV-сводки; число исключённых видно под карточками. Загружайте полный ZIP: серверные фильтры могут скрыть неначатые пробы. Для проверки возьмите код с `pending` в исходном `trials.csv`: его не должно быть в списке и аналитике даже после выбора другого режима или уровня.
 
 - `http://localhost:3033/api/analytics/export.xlsx` — Excel (`protocol`, `trials`, `attempts`, `events`, `interpretations`, `m4_transcriptions`, `agent_runs`, `summary`);
 - `http://localhost:3033/api/analytics/export.zip` — полный CSV-архив;
@@ -159,10 +171,23 @@ ssh -i "$env:USERPROFILE\.ssh\aia_github_deploy" root@194.226.120.153 "cd /opt/a
 ```
 Команда напечатает готовую ссылку.
 Выгрузить полный Task Mining / аналитику в ZIP:
-```bash
-$u = ssh -i "$env:USERPROFILE\.ssh\aia_github_deploy" ssh root@194.226.120.153 "cd /opt/article-interaction-automation/current && docker compose -p article-interaction-automation --env-file /etc/article-interaction-automation.env -f compose.yaml -f compose.prod.yaml exec -T backend sh scripts/invite.sh RESEARCHER --role researcher"
-curl.exe -sS -L -c researcher.cookies.txt "$u" -o NUL
-curl.exe -sS -b researcher.cookies.txt "https://194.226.120.153/api/analytics/export.zip" -o task-mining.zip
-Remove-Item researcher.cookies.txt
+```powershell
+& {
+    $u = ssh -i "$env:USERPROFILE\.ssh\aia_github_deploy" root@194.226.120.153 "cd /opt/article-interaction-automation/current && docker compose -p article-interaction-automation --env-file /etc/article-interaction-automation.env -f compose.yaml -f compose.prod.yaml exec -T backend sh scripts/invite.sh RESEARCHER --role researcher"
+    if ($LASTEXITCODE -ne 0 -or -not $u) { throw "SSH: failed to obtain an invitation." }
+    $u = ($u -join "`n").Trim()
+    try {
+        curl.exe --fail --silent --show-error --location --cookie-jar researcher.cookies.txt "$u" --output NUL
+        if ($LASTEXITCODE -ne 0) { throw "Researcher sign-in failed. Export stopped." }
+        curl.exe --fail --silent --show-error --cookie researcher.cookies.txt "https://194.226.120.153/api/analytics/export.zip" --output task-mining.zip
+        if ($LASTEXITCODE -ne 0) { throw "ZIP download failed. Check authentication and server availability." }
+        Write-Host "Downloaded: $(Join-Path (Get-Location) 'task-mining.zip')"
+    }
+    finally {
+        if (Test-Path -LiteralPath researcher.cookies.txt) {
+            Remove-Item -LiteralPath researcher.cookies.txt
+        }
+    }
+}
 ```
-task-mining.zip будет создан в текущей папке PowerShell. В нём есть полный CSV-экспорт, включая events с Task Mining.
+Вставьте блок целиком в PowerShell. `task-mining.zip` будет создан в текущей папке. В нём есть полный CSV-экспорт, включая events с Task Mining. Откройте ZIP в `fast_watcher.html`. При ошибке SSH или HTTP блок останавливается; `--fail` не позволяет сохранить HTTP-ошибку авторизации как ZIP. Файл от прежней неудачной команды может содержать JSON ошибки вместо архива: он станет пригоден после успешной повторной выгрузки. Не публикуйте ссылку приглашения и cookie-файл.
